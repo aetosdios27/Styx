@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/styx-core",
+    "crates/styx-dht",
+    "crates/styx-utp",
+    "crates/styx-ml",
+    "crates/styx-disk",
+    "crates/styx-tracker",
+    "crates/styx-proto",
+    "apps/styx-gui",
+    "apps/styx-cli",
+    "sim/swarm-sim",
+]
+
+[workspace.dependencies]
+tokio       = { version = "1", features = ["full"] }
+bytes       = "1"
+dashmap     = "6"
+sled        = "0.34"
+sha2        = "0.10"
+rand        = "0.8"
+serde       = { version = "1", features = ["derive"] }
+clap        = { version = "4", features = ["derive"] }
+anyhow      = "1"
+tracing     = "1"
+tracing-subscriber = "1"
+
+[profile.release]
+opt-level   = 3
+lto         = true
+codegen-units = 1
+strip       = true
