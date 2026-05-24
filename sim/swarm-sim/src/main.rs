@@ -31,12 +31,20 @@ struct Args {
     peers: usize,
     #[arg(long, default_value_t = 2_048)]
     pieces: usize,
+    #[arg(long)]
+    seeders: Option<usize>,
     #[arg(long, default_value_t = 86_400)]
     duration_secs: u64,
     #[arg(long, default_value_t = 10)]
     tick_secs: u64,
     #[arg(long, default_value_t = false)]
     no_rfwpms: bool,
+    #[arg(long, default_value_t = 1.0)]
+    transfer_rate: f64,
+    #[arg(long, default_value_t = 0.0)]
+    churn_rate: f64,
+    #[arg(long)]
+    seeder_lifetime: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,9 +137,13 @@ struct SimConfig {
     seed: u64,
     peers: usize,
     pieces: usize,
+    seeders: Option<usize>,
     duration_secs: u64,
     tick_secs: u64,
     no_rfwpms: bool,
+    transfer_rate: f64,
+    churn_rate: f64,
+    seeder_lifetime: Option<u64>,
 }
 
 #[derive(Default, Debug)]
@@ -195,9 +207,13 @@ fn main() -> Result<()> {
         seed: args.seed,
         peers: args.peers,
         pieces: args.pieces,
+        seeders: args.seeders,
         duration_secs: args.duration_secs,
         tick_secs: args.tick_secs,
         no_rfwpms: args.no_rfwpms,
+        transfer_rate: args.transfer_rate,
+        churn_rate: args.churn_rate,
+        seeder_lifetime: args.seeder_lifetime,
     };
 
     validate_config(&config)?;
@@ -214,11 +230,25 @@ fn validate_config(config: &SimConfig) -> Result<()> {
     if config.pieces == 0 {
         bail!("--pieces must be greater than zero");
     }
+    if let Some(seeders) = config.seeders {
+        if seeders == 0 {
+            bail!("--seeders must be greater than zero");
+        }
+        if seeders > config.peers {
+            bail!("--seeders must be less than or equal to --peers");
+        }
+    }
     if config.duration_secs == 0 {
         bail!("--duration-secs must be greater than zero");
     }
     if config.tick_secs == 0 {
         bail!("--tick-secs must be greater than zero");
+    }
+    if !(0.0..=1.0).contains(&config.transfer_rate) {
+        bail!("--transfer-rate must be between 0.0 and 1.0");
+    }
+    if !(0.0..=1.0).contains(&config.churn_rate) {
+        bail!("--churn-rate must be between 0.0 and 1.0");
     }
     Ok(())
 }
@@ -241,7 +271,12 @@ fn simulate(config: &SimConfig) -> Result<SimulationOutput> {
             continue;
         }
 
+        let mut decisions = Vec::new();
         for leecher_id in active_leechers(&peers, tick) {
+            if rng.gen_bool(config.churn_rate) {
+                peers[leecher_id].end_tick = tick;
+                continue;
+            }
             if peers[leecher_id].pieces.len() == config.pieces {
                 continue;
             }
@@ -261,7 +296,11 @@ fn simulate(config: &SimConfig) -> Result<SimulationOutput> {
                 continue;
             };
 
-            let success = rng.gen_bool(peers[uploader_id].reliability);
+            decisions.push((leecher_id, piece, uploader_id));
+        }
+
+        for (leecher_id, piece, uploader_id) in decisions {
+            let success = rng.gen_bool(peers[uploader_id].reliability) && rng.gen_bool(config.transfer_rate);
             let latency =
                 sample_delivery_latency(&peers[uploader_id], &peers[leecher_id], &mut rng);
             let block_offset = (tick % 16) * BLOCK_BYTES;
@@ -341,7 +380,7 @@ fn simulate(config: &SimConfig) -> Result<SimulationOutput> {
 }
 
 fn generate_peers(config: &SimConfig, total_ticks: u64, rng: &mut ChaCha8Rng) -> Result<Vec<Peer>> {
-    let seeders = (config.peers / 20).max(1);
+    let seeders = config.seeders.unwrap_or_else(|| (config.peers / 20).max(1));
     let log_normal = LogNormal::new(10.0, 1.0)?;
     let churn = Exp::new(1.0 / (total_ticks.max(1) as f64 * 0.65))?;
     let latency = LogNormal::new(4.2, 0.55)?;
@@ -361,7 +400,11 @@ fn generate_peers(config: &SimConfig, total_ticks: u64, rng: &mut ChaCha8Rng) ->
         };
         let sampled_lifetime = churn.sample(rng).ceil() as u64 + 1;
         let end_tick = if role == PeerRole::Seeder {
-            (sampled_lifetime * 2).min(total_ticks + sampled_lifetime / 2)
+            if let Some(lt) = config.seeder_lifetime {
+                lt.min(total_ticks)
+            } else {
+                (sampled_lifetime * 2).min(total_ticks + sampled_lifetime / 2)
+            }
         } else {
             (start_tick + sampled_lifetime).min(total_ticks)
         };
@@ -371,7 +414,7 @@ fn generate_peers(config: &SimConfig, total_ticks: u64, rng: &mut ChaCha8Rng) ->
         if role == PeerRole::Seeder {
             pieces.extend(0..config.pieces);
         } else {
-            let initial_density = rng.gen_range(0.01..0.25);
+            let initial_density = 0.0;
             for piece in 0..config.pieces {
                 if rng.gen_bool(initial_density) {
                     pieces.insert(piece);
@@ -758,9 +801,13 @@ mod tests {
             seed: 7,
             peers: 32,
             pieces: 24,
+            seeders: None,
             duration_secs: 600,
             tick_secs: 30,
             no_rfwpms: false,
+            transfer_rate: 1.0,
+            churn_rate: 0.0,
+            seeder_lifetime: None,
         }
     }
 
@@ -857,11 +904,25 @@ mod tests {
             seed: 1,
             peers: 0,
             pieces: 1,
+            seeders: None,
             duration_secs: 1,
             tick_secs: 1,
             no_rfwpms: false,
+            transfer_rate: 1.0,
+            churn_rate: 0.0,
+            seeder_lifetime: None,
         };
 
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn invalid_seeder_count_is_rejected() {
+        let mut config = test_config(PathBuf::from("ignored"));
+        config.seeders = Some(0);
+        assert!(validate_config(&config).is_err());
+
+        config.seeders = Some(config.peers + 1);
         assert!(validate_config(&config).is_err());
     }
 
