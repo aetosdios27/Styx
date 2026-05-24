@@ -35,6 +35,8 @@ struct Args {
     duration_secs: u64,
     #[arg(long, default_value_t = 10)]
     tick_secs: u64,
+    #[arg(long, default_value_t = false)]
+    no_rfwpms: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +131,7 @@ struct SimConfig {
     pieces: usize,
     duration_secs: u64,
     tick_secs: u64,
+    no_rfwpms: bool,
 }
 
 #[derive(Default, Debug)]
@@ -194,6 +197,7 @@ fn main() -> Result<()> {
         pieces: args.pieces,
         duration_secs: args.duration_secs,
         tick_secs: args.tick_secs,
+        no_rfwpms: args.no_rfwpms,
     };
 
     validate_config(&config)?;
@@ -246,6 +250,7 @@ fn simulate(config: &SimConfig) -> Result<SimulationOutput> {
                 &peers,
                 &active_uploaders,
                 config.pieces,
+                config.no_rfwpms,
                 &mut rng,
             ) else {
                 continue;
@@ -450,6 +455,7 @@ fn select_piece(
     peers: &[Peer],
     active_uploaders: &[usize],
     pieces: usize,
+    no_rfwpms: bool,
     rng: &mut ChaCha8Rng,
 ) -> Option<usize> {
     let mut availability = piece_availability(peers, active_uploaders, pieces);
@@ -466,7 +472,9 @@ fn select_piece(
         [] => None,
         [(piece, _)] => Some(*piece),
         [(rarest, _), (second, _), ..] => {
-            if rng.gen_bool(0.18) {
+            if no_rfwpms {
+                Some(*rarest)
+            } else if rng.gen_bool(0.18) {
                 Some(*second)
             } else {
                 Some(*rarest)
@@ -752,6 +760,7 @@ mod tests {
             pieces: 24,
             duration_secs: 600,
             tick_secs: 30,
+            no_rfwpms: false,
         }
     }
 
@@ -817,10 +826,28 @@ mod tests {
         let active = vec![1, 2];
 
         let selections = (0..200)
-            .filter_map(|_| select_piece(0, &peers, &active, 3, &mut rng))
+            .filter_map(|_| select_piece(0, &peers, &active, 3, false, &mut rng))
             .collect::<Vec<_>>();
         assert!(selections.contains(&1));
         assert!(selections.contains(&2));
+    }
+
+    #[test]
+    fn no_rfwpms_always_chooses_rarest_candidate() {
+        let mut rng = ChaCha8Rng::seed_from_u64(11);
+        let mut peers = vec![
+            peer_with_pieces(0, PeerRole::Leecher, &[0]),
+            peer_with_pieces(1, PeerRole::Seeder, &[0, 1, 2]),
+            peer_with_pieces(2, PeerRole::Seeder, &[0, 2]),
+        ];
+        peers[0].start_tick = 0;
+        peers[0].end_tick = 10;
+        let active = vec![1, 2];
+
+        let selections = (0..200)
+            .filter_map(|_| select_piece(0, &peers, &active, 3, true, &mut rng))
+            .collect::<Vec<_>>();
+        assert_eq!(selections, vec![1; 200]);
     }
 
     #[test]
@@ -832,6 +859,7 @@ mod tests {
             pieces: 1,
             duration_secs: 1,
             tick_secs: 1,
+            no_rfwpms: false,
         };
 
         assert!(validate_config(&config).is_err());
