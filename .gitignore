@@ -1,1 +1,6 @@
 /target
+
+# Local agent context, not project source.
+/.agents/
+/AGENTS.md
+/ROADMAP.md
