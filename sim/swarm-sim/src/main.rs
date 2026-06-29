@@ -300,7 +300,8 @@ fn simulate(config: &SimConfig) -> Result<SimulationOutput> {
         }
 
         for (leecher_id, piece, uploader_id) in decisions {
-            let success = rng.gen_bool(peers[uploader_id].reliability) && rng.gen_bool(config.transfer_rate);
+            let success =
+                rng.gen_bool(peers[uploader_id].reliability) && rng.gen_bool(config.transfer_rate);
             let latency =
                 sample_delivery_latency(&peers[uploader_id], &peers[leecher_id], &mut rng);
             let block_offset = (tick % 16) * BLOCK_BYTES;

@@ -1,0 +1,21 @@
+[package]
+name = "styx-proto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+styx-proto = { path = "../crates/styx-proto" }
+
+[[bin]]
+name = "bencode_decode"
+path = "fuzz_targets/bencode_decode.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

@@ -1,4 +1,5 @@
 /target
+target/
 
 # Local agent context, not project source.
 /.agents/

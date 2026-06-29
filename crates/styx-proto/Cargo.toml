@@ -5,6 +5,13 @@ edition = "2021"
 
 [dependencies]
 bytes = { workspace = true }
+sha1 = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 proptest = "1"
+
+[[bench]]
+name = "bencode_decode"
+harness = false
