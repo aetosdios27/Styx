@@ -15,6 +15,12 @@ const SHA1_DIGEST_BYTES: usize = 20;
 pub struct InfoHashV1([u8; SHA1_DIGEST_BYTES]);
 
 impl InfoHashV1 {
+    /// Construct a v1 info hash from its raw 20-byte SHA-1 digest.
+    #[must_use]
+    pub const fn new(bytes: [u8; SHA1_DIGEST_BYTES]) -> Self {
+        Self(bytes)
+    }
+
     /// Return the raw 20-byte SHA-1 digest.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; SHA1_DIGEST_BYTES] {
