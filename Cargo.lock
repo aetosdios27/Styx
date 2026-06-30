@@ -2014,6 +2014,14 @@ version = "0.1.0"
 [[package]]
 name = "styx-core"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "styx-disk",
+ "styx-proto",
+ "thiserror",
+]
 
 [[package]]
 name = "styx-dht"

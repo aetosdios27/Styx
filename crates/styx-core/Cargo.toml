@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bytes = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+styx-disk = { path = "../styx-disk" }
+styx-proto = { path = "../styx-proto" }
+thiserror = { workspace = true }
