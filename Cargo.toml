@@ -34,6 +34,9 @@ arrow-array = "56"
 arrow-schema = "56"
 tempfile    = "3"
 criterion   = "0.7"
+percent-encoding = "2"
+reqwest     = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+url         = "2"
 
 [profile.release]
 opt-level   = 3

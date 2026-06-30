@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bytes = { workspace = true }
+percent-encoding = { workspace = true }
+reqwest = { workspace = true }
+styx-proto = { path = "../styx-proto" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
