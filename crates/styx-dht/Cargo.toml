@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bytes = { workspace = true }
+sha1 = { workspace = true }
+styx-proto = { path = "../styx-proto" }
+thiserror = { workspace = true }
+tokio = { workspace = true }

@@ -2026,6 +2026,13 @@ dependencies = [
 [[package]]
 name = "styx-dht"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "sha1",
+ "styx-proto",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "styx-disk"
@@ -2076,6 +2083,12 @@ dependencies = [
 [[package]]
 name = "styx-utp"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "rand 0.8.6",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "subtle"
