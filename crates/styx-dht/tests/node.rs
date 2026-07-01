@@ -44,6 +44,7 @@ fn get_peers_returns_known_peers_and_token() {
                 query: DhtQuery::GetPeers {
                     id: NodeId::new([1; 20]),
                     info_hash: hash,
+                    want: Vec::new(),
                 },
             },
             source(1),
@@ -57,6 +58,7 @@ fn get_peers_returns_known_peers_and_token() {
                 token,
                 values,
                 nodes,
+                ..
             },
         ..
     } = response
@@ -86,6 +88,7 @@ fn get_peers_without_known_peers_returns_closest_nodes_and_token() {
                 query: DhtQuery::GetPeers {
                     id: node_id(1),
                     info_hash: hash,
+                    want: Vec::new(),
                 },
             },
             source(1),

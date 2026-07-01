@@ -2,8 +2,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use bytes::Bytes;
 use styx_dht::{
-    CompactNode, CompactPeer, DhtError, DhtMessage, DhtQuery, DhtResponse, InfoHash, KrpcError,
-    NodeAddr, NodeId, TransactionId,
+    AddressFamily, CompactNode, CompactPeer, DhtError, DhtMessage, DhtQuery, DhtResponse, InfoHash,
+    KrpcError, NodeAddr, NodeId, TransactionId,
 };
 
 #[test]
@@ -28,6 +28,7 @@ fn find_node_query_round_trips_through_bencode() {
         query: DhtQuery::FindNode {
             id: NodeId::new([1; 20]),
             target: NodeId::new([2; 20]),
+            want: Vec::new(),
         },
     };
 
@@ -43,6 +44,7 @@ fn get_peers_query_round_trips_through_bencode() {
         query: DhtQuery::GetPeers {
             id: NodeId::new([1; 20]),
             info_hash: InfoHash::new([3; 20]),
+            want: Vec::new(),
         },
     };
 
@@ -81,6 +83,8 @@ fn get_peers_response_with_peers_round_trips_through_bencode() {
                 6881,
             ))],
             nodes: Vec::new(),
+            nodes6: Vec::new(),
+            external_ip: None,
         },
     };
 
@@ -103,12 +107,60 @@ fn find_node_response_with_compact_nodes_round_trips_through_bencode() {
         response: DhtResponse::FindNode {
             id: NodeId::new([4; 20]),
             nodes: vec![node],
+            nodes6: Vec::new(),
+            external_ip: None,
         },
     };
 
     let decoded = DhtMessage::decode(&response.encode().unwrap()).unwrap();
 
     assert_eq!(decoded, response);
+}
+
+#[test]
+fn get_peers_query_round_trips_want_ipv4_and_ipv6() {
+    let message = DhtMessage::Query {
+        transaction_id: TransactionId::new(vec![b'w']).unwrap(),
+        query: DhtQuery::GetPeers {
+            id: NodeId::new([1; 20]),
+            info_hash: InfoHash::new([3; 20]),
+            want: vec![AddressFamily::Ipv4, AddressFamily::Ipv6],
+        },
+    };
+
+    let decoded = DhtMessage::decode(&message.encode().unwrap()).unwrap();
+
+    assert_eq!(decoded, message);
+}
+
+#[test]
+fn get_peers_response_round_trips_nodes6_values6_and_external_ip() {
+    let peer6 = CompactPeer::new(SocketAddr::new(
+        IpAddr::V6("2001:db8::1".parse().unwrap()),
+        51413,
+    ));
+    let node6 = CompactNode {
+        id: NodeId::new([8; 20]),
+        addr: NodeAddr::new(SocketAddr::new(
+            IpAddr::V6("2001:db8::2".parse().unwrap()),
+            6881,
+        )),
+    };
+    let message = DhtMessage::Response {
+        transaction_id: TransactionId::new(vec![b'6']).unwrap(),
+        response: DhtResponse::GetPeers {
+            id: NodeId::new([2; 20]),
+            token: Bytes::from_static(b"tok"),
+            values: vec![peer6],
+            nodes: Vec::new(),
+            nodes6: vec![node6],
+            external_ip: Some(IpAddr::V6("2001:db8::99".parse().unwrap())),
+        },
+    };
+
+    let decoded = DhtMessage::decode(&message.encode().unwrap()).unwrap();
+
+    assert_eq!(decoded, message);
 }
 
 #[test]

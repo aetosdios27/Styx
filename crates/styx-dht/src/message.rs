@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use bytes::Bytes;
 use styx_proto::{decode, encode, BencodeValue};
@@ -29,10 +30,12 @@ pub enum DhtQuery {
     FindNode {
         id: NodeId,
         target: NodeId,
+        want: Vec<AddressFamily>,
     },
     GetPeers {
         id: NodeId,
         info_hash: InfoHash,
+        want: Vec<AddressFamily>,
     },
     AnnouncePeer {
         id: NodeId,
@@ -51,12 +54,16 @@ pub enum DhtResponse {
     FindNode {
         id: NodeId,
         nodes: Vec<CompactNode>,
+        nodes6: Vec<CompactNode>,
+        external_ip: Option<IpAddr>,
     },
     GetPeers {
         id: NodeId,
         token: Bytes,
         values: Vec<CompactPeer>,
         nodes: Vec<CompactNode>,
+        nodes6: Vec<CompactNode>,
+        external_ip: Option<IpAddr>,
     },
     AnnouncePeer {
         id: NodeId,
@@ -67,6 +74,12 @@ pub enum DhtResponse {
 pub struct KrpcError {
     pub code: i64,
     pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum AddressFamily {
+    Ipv4,
+    Ipv6,
 }
 
 impl DhtMessage {
@@ -165,13 +178,19 @@ impl DhtQuery {
             Self::Ping { id } => {
                 insert_id(&mut args, *id);
             }
-            Self::FindNode { id, target } => {
+            Self::FindNode { id, target, want } => {
                 insert_id(&mut args, *id);
                 args.insert(b"target".to_vec(), bytes(target.as_bytes()));
+                insert_want(&mut args, want);
             }
-            Self::GetPeers { id, info_hash } => {
+            Self::GetPeers {
+                id,
+                info_hash,
+                want,
+            } => {
                 insert_id(&mut args, *id);
                 args.insert(b"info_hash".to_vec(), bytes(info_hash.as_bytes()));
+                insert_want(&mut args, want);
             }
             Self::AnnouncePeer {
                 id,
@@ -201,10 +220,12 @@ impl DhtQuery {
             b"find_node" => Ok(Self::FindNode {
                 id: node_id_field(args, b"id", "id")?,
                 target: node_id_field(args, b"target", "target")?,
+                want: optional_want(args)?,
             }),
             b"get_peers" => Ok(Self::GetPeers {
                 id: node_id_field(args, b"id", "id")?,
                 info_hash: info_hash_field(args, b"info_hash", "info_hash")?,
+                want: optional_want(args)?,
             }),
             b"announce_peer" => Ok(Self::AnnouncePeer {
                 id: node_id_field(args, b"id", "id")?,
@@ -225,42 +246,38 @@ impl DhtResponse {
             Self::Ping { id } | Self::AnnouncePeer { id } => {
                 insert_id(&mut fields, *id);
             }
-            Self::FindNode { id, nodes } => {
+            Self::FindNode {
+                id,
+                nodes,
+                nodes6,
+                external_ip,
+            } => {
                 insert_id(&mut fields, *id);
-                fields.insert(
-                    b"nodes".to_vec(),
-                    BencodeValue::Bytes(CompactNode::encode_many_ipv4(nodes)?),
-                );
+                insert_nodes(&mut fields, nodes, nodes6)?;
+                insert_external_ip(&mut fields, *external_ip);
             }
             Self::GetPeers {
                 id,
                 token,
                 values,
                 nodes,
+                nodes6,
+                external_ip,
             } => {
                 insert_id(&mut fields, *id);
                 fields.insert(b"token".to_vec(), bytes(token));
+                insert_external_ip(&mut fields, *external_ip);
                 if !values.is_empty() {
                     fields.insert(
                         b"values".to_vec(),
-                        BencodeValue::List(
-                            values
-                                .iter()
-                                .map(|peer| {
-                                    peer.encode_ipv4().map(|peer| {
-                                        BencodeValue::Bytes(Bytes::copy_from_slice(&peer))
-                                    })
-                                })
-                                .collect::<Result<Vec<_>, DhtError>>()?,
-                        ),
+                        BencodeValue::List(values.iter().map(encode_peer_value).collect::<Result<
+                            Vec<_>,
+                            DhtError,
+                        >>(
+                        )?),
                     );
                 }
-                if !nodes.is_empty() {
-                    fields.insert(
-                        b"nodes".to_vec(),
-                        BencodeValue::Bytes(CompactNode::encode_many_ipv4(nodes)?),
-                    );
-                }
+                insert_nodes(&mut fields, nodes, nodes6)?;
             }
         }
         Ok(fields)
@@ -271,15 +288,26 @@ impl DhtResponse {
         if let Some(token) = optional_bytes_field(fields, b"token")? {
             let values = optional_peer_values(fields)?;
             let nodes = optional_nodes_field(fields)?.unwrap_or_default();
+            let nodes6 = optional_nodes6_field(fields)?.unwrap_or_default();
+            let external_ip = optional_external_ip(fields)?;
             return Ok(Self::GetPeers {
                 id,
                 token: Bytes::copy_from_slice(token),
                 values,
                 nodes,
+                nodes6,
+                external_ip,
             });
         }
-        if let Some(nodes) = optional_nodes_field(fields)? {
-            return Ok(Self::FindNode { id, nodes });
+        let nodes = optional_nodes_field(fields)?;
+        let nodes6 = optional_nodes6_field(fields)?;
+        if nodes.is_some() || nodes6.is_some() {
+            return Ok(Self::FindNode {
+                id,
+                nodes: nodes.unwrap_or_default(),
+                nodes6: nodes6.unwrap_or_default(),
+                external_ip: optional_external_ip(fields)?,
+            });
         }
         Ok(Self::Ping { id })
     }
@@ -287,6 +315,51 @@ impl DhtResponse {
 
 fn insert_id(fields: &mut BTreeMap<Vec<u8>, BencodeValue>, id: NodeId) {
     fields.insert(b"id".to_vec(), bytes(id.as_bytes()));
+}
+
+fn insert_want(fields: &mut BTreeMap<Vec<u8>, BencodeValue>, want: &[AddressFamily]) {
+    if want.is_empty() {
+        return;
+    }
+    fields.insert(
+        b"want".to_vec(),
+        BencodeValue::List(
+            want.iter()
+                .map(|family| bytes(family.as_bytes()))
+                .collect::<Vec<_>>(),
+        ),
+    );
+}
+
+fn insert_nodes(
+    fields: &mut BTreeMap<Vec<u8>, BencodeValue>,
+    nodes: &[CompactNode],
+    nodes6: &[CompactNode],
+) -> Result<(), DhtError> {
+    if !nodes.is_empty() {
+        fields.insert(
+            b"nodes".to_vec(),
+            BencodeValue::Bytes(CompactNode::encode_many_ipv4(nodes)?),
+        );
+    }
+    if !nodes6.is_empty() {
+        fields.insert(
+            b"nodes6".to_vec(),
+            BencodeValue::Bytes(CompactNode::encode_many_ipv6(nodes6)?),
+        );
+    }
+    Ok(())
+}
+
+fn insert_external_ip(fields: &mut BTreeMap<Vec<u8>, BencodeValue>, external_ip: Option<IpAddr>) {
+    let Some(ip) = external_ip else {
+        return;
+    };
+    let bytes = match ip {
+        IpAddr::V4(ip) => Bytes::copy_from_slice(&ip.octets()),
+        IpAddr::V6(ip) => Bytes::copy_from_slice(&ip.octets()),
+    };
+    fields.insert(b"ip".to_vec(), BencodeValue::Bytes(bytes));
 }
 
 fn field<'a>(
@@ -382,6 +455,15 @@ fn optional_nodes_field(
     Ok(Some(CompactNode::decode_many_ipv4(nodes)?))
 }
 
+fn optional_nodes6_field(
+    fields: &BTreeMap<Vec<u8>, BencodeValue>,
+) -> Result<Option<Vec<CompactNode>>, DhtError> {
+    let Some(nodes) = optional_bytes_field(fields, b"nodes6")? else {
+        return Ok(None);
+    };
+    Ok(Some(CompactNode::decode_many_ipv6(nodes)?))
+}
+
 fn optional_peer_values(
     fields: &BTreeMap<Vec<u8>, BencodeValue>,
 ) -> Result<Vec<CompactPeer>, DhtError> {
@@ -394,10 +476,59 @@ fn optional_peer_values(
     values
         .iter()
         .map(|value| match value {
-            BencodeValue::Bytes(bytes) => CompactPeer::decode_ipv4(bytes),
+            BencodeValue::Bytes(bytes) if bytes.len() == 6 => CompactPeer::decode_ipv4(bytes),
+            BencodeValue::Bytes(bytes) if bytes.len() == 18 => CompactPeer::decode_ipv6(bytes),
+            BencodeValue::Bytes(bytes) => Err(DhtError::InvalidLength {
+                expected: 6,
+                actual: bytes.len(),
+            }),
             _ => Err(DhtError::InvalidField("values")),
         })
         .collect()
+}
+
+fn optional_want(dict: &BTreeMap<Vec<u8>, BencodeValue>) -> Result<Vec<AddressFamily>, DhtError> {
+    let Some(value) = dict.get(b"want".as_slice()) else {
+        return Ok(Vec::new());
+    };
+    let BencodeValue::List(values) = value else {
+        return Err(DhtError::InvalidField("want"));
+    };
+    values
+        .iter()
+        .map(|value| match value {
+            BencodeValue::Bytes(bytes) => AddressFamily::try_from(bytes.as_ref()),
+            _ => Err(DhtError::InvalidField("want")),
+        })
+        .collect()
+}
+
+fn optional_external_ip(
+    fields: &BTreeMap<Vec<u8>, BencodeValue>,
+) -> Result<Option<IpAddr>, DhtError> {
+    let Some(bytes) = optional_bytes_field(fields, b"ip")? else {
+        return Ok(None);
+    };
+    match bytes.len() {
+        4 => Ok(Some(IpAddr::V4(Ipv4Addr::new(
+            bytes[0], bytes[1], bytes[2], bytes[3],
+        )))),
+        16 => Ok(Some(IpAddr::V6(Ipv6Addr::from(
+            <[u8; 16]>::try_from(bytes).map_err(|_| DhtError::InvalidField("ip"))?,
+        )))),
+        _ => Err(DhtError::InvalidField("ip")),
+    }
+}
+
+fn encode_peer_value(peer: &CompactPeer) -> Result<BencodeValue, DhtError> {
+    match peer.socket_addr() {
+        std::net::SocketAddr::V4(_) => peer
+            .encode_ipv4()
+            .map(|peer| BencodeValue::Bytes(Bytes::copy_from_slice(&peer))),
+        std::net::SocketAddr::V6(_) => peer
+            .encode_ipv6()
+            .map(|peer| BencodeValue::Bytes(Bytes::copy_from_slice(&peer))),
+    }
 }
 
 fn transaction_id(value: &BencodeValue) -> Result<TransactionId, DhtError> {
@@ -428,4 +559,25 @@ fn krpc_error(value: &BencodeValue) -> Result<KrpcError, DhtError> {
 
 fn bytes(value: &[u8]) -> BencodeValue {
     BencodeValue::Bytes(Bytes::copy_from_slice(value))
+}
+
+impl AddressFamily {
+    fn as_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Ipv4 => b"n4",
+            Self::Ipv6 => b"n6",
+        }
+    }
+}
+
+impl TryFrom<&[u8]> for AddressFamily {
+    type Error = DhtError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        match value {
+            b"n4" => Ok(Self::Ipv4),
+            b"n6" => Ok(Self::Ipv6),
+            _ => Err(DhtError::InvalidField("want")),
+        }
+    }
 }

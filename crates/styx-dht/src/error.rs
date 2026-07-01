@@ -10,18 +10,26 @@ pub enum DhtError {
     TransactionIdTooLong { len: usize, max: usize },
     #[error("IPv6 compact encoding is not supported by this function")]
     NotIpv4,
+    #[error("IPv4 compact encoding is not supported by this function")]
+    NotIpv6,
     #[error("missing KRPC field `{0}`")]
     MissingField(&'static str),
     #[error("invalid KRPC field `{0}`")]
     InvalidField(&'static str),
     #[error("invalid DHT message: {0}")]
     InvalidMessage(&'static str),
+    #[error("invalid DHT config field `{0}`")]
+    InvalidConfig(&'static str),
     #[error("Kademlia bucket is full")]
     BucketFull,
     #[error("node is unknown")]
     UnknownNode,
     #[error("peer store is full")]
     PeerStoreFull,
+    #[error("transaction table is full")]
+    TransactionTableFull,
+    #[error("unexpected or unsolicited transaction")]
+    UnexpectedTransaction,
     #[error("invalid announce token")]
     InvalidToken,
     #[error(transparent)]
@@ -56,14 +64,18 @@ impl PartialEq for DhtError {
                 },
             ) => left_len == right_len && left_max == right_max,
             (Self::NotIpv4, Self::NotIpv4)
+            | (Self::NotIpv6, Self::NotIpv6)
             | (Self::IntegerOverflow, Self::IntegerOverflow)
             | (Self::BucketFull, Self::BucketFull)
             | (Self::UnknownNode, Self::UnknownNode)
             | (Self::PeerStoreFull, Self::PeerStoreFull)
+            | (Self::TransactionTableFull, Self::TransactionTableFull)
+            | (Self::UnexpectedTransaction, Self::UnexpectedTransaction)
             | (Self::InvalidToken, Self::InvalidToken) => true,
             (Self::MissingField(left), Self::MissingField(right))
             | (Self::InvalidField(left), Self::InvalidField(right))
-            | (Self::InvalidMessage(left), Self::InvalidMessage(right)) => left == right,
+            | (Self::InvalidMessage(left), Self::InvalidMessage(right))
+            | (Self::InvalidConfig(left), Self::InvalidConfig(right)) => left == right,
             (Self::Bencode(left), Self::Bencode(right)) => left == right,
             (Self::Io(left), Self::Io(right)) => left.kind() == right.kind(),
             _ => false,

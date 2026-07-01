@@ -56,7 +56,12 @@ impl DhtNode {
                     .collect();
                 Ok(response(
                     transaction_id,
-                    DhtResponse::FindNode { id: self.id, nodes },
+                    DhtResponse::FindNode {
+                        id: self.id,
+                        nodes,
+                        nodes6: Vec::new(),
+                        external_ip: None,
+                    },
                 ))
             }
             DhtQuery::GetPeers { info_hash, .. } => {
@@ -81,6 +86,8 @@ impl DhtNode {
                         token: self.tokens.issue(source.socket_addr().ip()),
                         values,
                         nodes,
+                        nodes6: Vec::new(),
+                        external_ip: None,
                     },
                 ))
             }
@@ -120,6 +127,11 @@ impl DhtNode {
     #[must_use]
     pub fn peers(&self, info_hash: InfoHash) -> Vec<CompactPeer> {
         self.peers.peers(info_hash)
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> NodeId {
+        self.id
     }
 
     #[must_use]

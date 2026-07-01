@@ -1,6 +1,50 @@
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::time::{Duration, Instant};
+
 use std::net::Ipv4Addr;
 
 use crate::NodeId;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceRateLimiter {
+    capacity: usize,
+    window: Duration,
+    sources: HashMap<IpAddr, SourceWindow>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SourceWindow {
+    started_at: Instant,
+    count: usize,
+}
+
+impl SourceRateLimiter {
+    #[must_use]
+    pub fn new(capacity: usize, window: Duration) -> Self {
+        Self {
+            capacity,
+            window,
+            sources: HashMap::new(),
+        }
+    }
+
+    pub fn check(&mut self, source: IpAddr, now: Instant) -> bool {
+        let entry = self.sources.entry(source).or_insert(SourceWindow {
+            started_at: now,
+            count: 0,
+        });
+        if now.duration_since(entry.started_at) >= self.window {
+            entry.started_at = now;
+            entry.count = 0;
+        }
+        if entry.count >= self.capacity {
+            return false;
+        }
+        entry.count += 1;
+        true
+    }
+}
 
 const IPV4_MASK: [u8; 4] = [0x03, 0x0f, 0x3f, 0xff];
 const CRC32C_POLY_REVERSED: u32 = 0x82f6_3b78;

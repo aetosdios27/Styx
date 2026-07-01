@@ -25,6 +25,7 @@ fn simulated_get_peers_lookup_discovers_peer_through_known_node() {
                 query: DhtQuery::GetPeers {
                     id: node_id(1),
                     info_hash,
+                    want: Vec::new(),
                 },
             },
             node_addr(1),

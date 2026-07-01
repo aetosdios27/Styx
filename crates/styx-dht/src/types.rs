@@ -1,5 +1,5 @@
 use std::convert::TryFrom;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use bytes::Bytes;
 
@@ -9,6 +9,8 @@ pub const NODE_ID_LEN: usize = 20;
 pub const INFO_HASH_LEN: usize = 20;
 pub const IPV4_COMPACT_NODE_LEN: usize = 26;
 pub const IPV4_COMPACT_PEER_LEN: usize = 6;
+pub const IPV6_COMPACT_NODE_LEN: usize = 38;
+pub const IPV6_COMPACT_PEER_LEN: usize = 18;
 pub const MAX_TRANSACTION_ID_LEN: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -152,6 +154,38 @@ impl CompactNode {
         })
     }
 
+    pub fn encode_ipv6(&self) -> Result<[u8; IPV6_COMPACT_NODE_LEN], DhtError> {
+        let SocketAddr::V6(addr) = self.addr.socket_addr() else {
+            return Err(DhtError::NotIpv6);
+        };
+        let mut output = [0_u8; IPV6_COMPACT_NODE_LEN];
+        output[..NODE_ID_LEN].copy_from_slice(self.id.as_bytes());
+        output[20..36].copy_from_slice(&addr.ip().octets());
+        output[36..38].copy_from_slice(&addr.port().to_be_bytes());
+        Ok(output)
+    }
+
+    pub fn decode_ipv6(input: &[u8]) -> Result<Self, DhtError> {
+        if input.len() != IPV6_COMPACT_NODE_LEN {
+            return Err(DhtError::InvalidLength {
+                expected: IPV6_COMPACT_NODE_LEN,
+                actual: input.len(),
+            });
+        }
+        let id = NodeId::try_from(&input[..NODE_ID_LEN])?;
+        let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&input[20..36]).map_err(|_| {
+            DhtError::InvalidLength {
+                expected: 16,
+                actual: input[20..36].len(),
+            }
+        })?);
+        let port = u16::from_be_bytes([input[36], input[37]]);
+        Ok(Self {
+            id,
+            addr: NodeAddr::new(SocketAddr::new(IpAddr::V6(ip), port)),
+        })
+    }
+
     pub fn encode_many_ipv4(nodes: &[Self]) -> Result<Bytes, DhtError> {
         let mut output = Vec::with_capacity(nodes.len() * IPV4_COMPACT_NODE_LEN);
         for node in nodes {
@@ -170,6 +204,27 @@ impl CompactNode {
         input
             .chunks_exact(IPV4_COMPACT_NODE_LEN)
             .map(Self::decode_ipv4)
+            .collect()
+    }
+
+    pub fn encode_many_ipv6(nodes: &[Self]) -> Result<Bytes, DhtError> {
+        let mut output = Vec::with_capacity(nodes.len() * IPV6_COMPACT_NODE_LEN);
+        for node in nodes {
+            output.extend_from_slice(&node.encode_ipv6()?);
+        }
+        Ok(Bytes::from(output))
+    }
+
+    pub fn decode_many_ipv6(input: &[u8]) -> Result<Vec<Self>, DhtError> {
+        if !input.len().is_multiple_of(IPV6_COMPACT_NODE_LEN) {
+            return Err(DhtError::InvalidLength {
+                expected: IPV6_COMPACT_NODE_LEN,
+                actual: input.len(),
+            });
+        }
+        input
+            .chunks_exact(IPV6_COMPACT_NODE_LEN)
+            .map(Self::decode_ipv6)
             .collect()
     }
 }
@@ -205,5 +260,32 @@ impl CompactPeer {
         let ip = Ipv4Addr::new(input[0], input[1], input[2], input[3]);
         let port = u16::from_be_bytes([input[4], input[5]]);
         Ok(Self::new(SocketAddr::new(IpAddr::V4(ip), port)))
+    }
+
+    pub fn encode_ipv6(&self) -> Result<[u8; IPV6_COMPACT_PEER_LEN], DhtError> {
+        let SocketAddr::V6(addr) = self.addr else {
+            return Err(DhtError::NotIpv6);
+        };
+        let mut output = [0_u8; IPV6_COMPACT_PEER_LEN];
+        output[..16].copy_from_slice(&addr.ip().octets());
+        output[16..18].copy_from_slice(&addr.port().to_be_bytes());
+        Ok(output)
+    }
+
+    pub fn decode_ipv6(input: &[u8]) -> Result<Self, DhtError> {
+        if input.len() != IPV6_COMPACT_PEER_LEN {
+            return Err(DhtError::InvalidLength {
+                expected: IPV6_COMPACT_PEER_LEN,
+                actual: input.len(),
+            });
+        }
+        let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&input[..16]).map_err(|_| {
+            DhtError::InvalidLength {
+                expected: 16,
+                actual: input[..16].len(),
+            }
+        })?);
+        let port = u16::from_be_bytes([input[16], input[17]]);
+        Ok(Self::new(SocketAddr::new(IpAddr::V6(ip), port)))
     }
 }
