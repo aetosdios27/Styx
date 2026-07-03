@@ -1,0 +1,49 @@
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Clone, Debug, Eq, PartialEq, Parser)]
+#[command(name = "styx-cli", about = "Terminal control surface for Styx")]
+pub struct Cli {
+    #[arg(
+        long,
+        help = "Run without rendering the terminal UI and emit JSON lines"
+    )]
+    pub headless: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "IPC socket path for control commands"
+    )]
+    pub ipc: Option<PathBuf>,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum Command {
+    #[command(about = "Add a .torrent file to the local runtime")]
+    Add {
+        #[arg(value_name = "TORRENT")]
+        source: PathBuf,
+        #[arg(long, value_name = "DIR")]
+        destination: Option<PathBuf>,
+    },
+    #[command(about = "Remove a torrent by v1 info hash")]
+    Remove {
+        #[arg(value_name = "INFO_HASH")]
+        info_hash: String,
+    },
+    #[command(about = "Pause a torrent by v1 info hash")]
+    Pause {
+        #[arg(value_name = "INFO_HASH")]
+        info_hash: String,
+    },
+    #[command(about = "Resume a torrent by v1 info hash")]
+    Resume {
+        #[arg(value_name = "INFO_HASH")]
+        info_hash: String,
+    },
+    #[command(about = "Print the current runtime snapshot")]
+    Status,
+}
