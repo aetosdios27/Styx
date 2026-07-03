@@ -11,6 +11,7 @@ mod manager;
 mod peer;
 mod picker;
 mod pipeline;
+mod privacy;
 mod rate;
 mod types;
 
@@ -21,6 +22,10 @@ pub use manager::PeerConnectionManager;
 pub use peer::PeerSession;
 pub use picker::{PiecePicker, TorrentState};
 pub use pipeline::{InFlightRequest, RequestPipeline};
+pub use privacy::{
+    IdentityEpoch, PeerIdPrefix, PeerIdentity, PeerIdentityManager, PrivacyAction, PrivacyConfig,
+    PrivacyController, PrivacyIntent,
+};
 pub use rate::RateWindow;
 pub use types::{
     BlockRequest, DisconnectReason, PeerAction, PeerKey, PeerManagerConfig, TorrentKey,

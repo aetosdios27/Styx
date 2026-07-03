@@ -21,4 +21,8 @@ pub enum CoreError {
     },
     #[error("request is not in flight: {request:?}")]
     RequestNotInFlight { request: BlockRequest },
+    #[error("privacy configuration is invalid: {field}")]
+    InvalidPrivacyConfig { field: &'static str },
+    #[error("could not generate a unique peer id after {attempts} attempts")]
+    PeerIdExhausted { attempts: usize },
 }

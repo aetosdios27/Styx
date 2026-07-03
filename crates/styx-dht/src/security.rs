@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 use std::net::Ipv4Addr;
@@ -47,11 +47,49 @@ impl SourceRateLimiter {
 }
 
 const IPV4_MASK: [u8; 4] = [0x03, 0x0f, 0x3f, 0xff];
+const IPV6_MASK: [u8; 8] = [0x01, 0x03, 0x07, 0x0f, 0x1f, 0x3f, 0x7f, 0xff];
 const CRC32C_POLY_REVERSED: u32 = 0x82f6_3b78;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ExternalIp {
+    V4(Ipv4Addr),
+    V6(Ipv6Addr),
+}
 
 #[must_use]
 pub fn generate_bep42_ipv4_id(ip: Ipv4Addr, random: u8, entropy: [u8; 16]) -> NodeId {
-    let crc = bep42_crc_ipv4(ip, random);
+    let mut masked = ip.octets();
+    apply_bep42_mask(&mut masked, &IPV4_MASK, random);
+    generate_bep42_id(&masked, random, entropy)
+}
+
+#[must_use]
+pub fn generate_bep42_ipv6_id(ip: Ipv6Addr, random: u8, entropy: [u8; 16]) -> NodeId {
+    let mut masked = [0; 8];
+    masked.copy_from_slice(&ip.octets()[..8]);
+    apply_bep42_mask(&mut masked, &IPV6_MASK, random);
+    generate_bep42_id(&masked, random, entropy)
+}
+
+#[must_use]
+pub fn is_bep42_ipv6_id(ip: Ipv6Addr, node_id: &[u8; 20]) -> bool {
+    let random = node_id[19];
+    let expected = generate_bep42_ipv6_id(ip, random, [0; 16]);
+    node_id[0] == expected.as_bytes()[0]
+        && node_id[1] == expected.as_bytes()[1]
+        && (node_id[2] & 0xf8) == (expected.as_bytes()[2] & 0xf8)
+}
+
+#[must_use]
+pub fn is_bep42_id(ip: ExternalIp, node_id: &[u8; 20]) -> bool {
+    match ip {
+        ExternalIp::V4(ip) => is_bep42_ipv4_id(ip, node_id),
+        ExternalIp::V6(ip) => is_bep42_ipv6_id(ip, node_id),
+    }
+}
+
+fn generate_bep42_id(masked_ip: &[u8], random: u8, entropy: [u8; 16]) -> NodeId {
+    let crc = crc32c(masked_ip);
     let mut id = [0_u8; 20];
     id[0] = (crc >> 24) as u8;
     id[1] = (crc >> 16) as u8;
@@ -70,13 +108,11 @@ pub fn is_bep42_ipv4_id(ip: Ipv4Addr, node_id: &[u8; 20]) -> bool {
         && (node_id[2] & 0xf8) == (expected.as_bytes()[2] & 0xf8)
 }
 
-fn bep42_crc_ipv4(ip: Ipv4Addr, random: u8) -> u32 {
-    let mut masked = ip.octets();
-    for (byte, mask) in masked.iter_mut().zip(IPV4_MASK) {
+fn apply_bep42_mask(bytes: &mut [u8], mask: &[u8], random: u8) {
+    for (byte, mask) in bytes.iter_mut().zip(mask) {
         *byte &= mask;
     }
-    masked[0] |= (random & 0x07) << 5;
-    crc32c(&masked)
+    bytes[0] |= (random & 0x07) << 5;
 }
 
 fn crc32c(input: &[u8]) -> u32 {

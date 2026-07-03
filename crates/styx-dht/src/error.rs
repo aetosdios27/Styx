@@ -20,6 +20,10 @@ pub enum DhtError {
     InvalidMessage(&'static str),
     #[error("invalid DHT config field `{0}`")]
     InvalidConfig(&'static str),
+    #[error("invalid DHT identity config field `{0}`")]
+    InvalidIdentityConfig(&'static str),
+    #[error("could not generate a unique DHT node id after {attempts} attempts")]
+    NodeIdExhausted { attempts: usize },
     #[error("Kademlia bucket is full")]
     BucketFull,
     #[error("node is unknown")]
@@ -75,7 +79,18 @@ impl PartialEq for DhtError {
             (Self::MissingField(left), Self::MissingField(right))
             | (Self::InvalidField(left), Self::InvalidField(right))
             | (Self::InvalidMessage(left), Self::InvalidMessage(right))
-            | (Self::InvalidConfig(left), Self::InvalidConfig(right)) => left == right,
+            | (Self::InvalidConfig(left), Self::InvalidConfig(right))
+            | (Self::InvalidIdentityConfig(left), Self::InvalidIdentityConfig(right)) => {
+                left == right
+            }
+            (
+                Self::NodeIdExhausted {
+                    attempts: left_attempts,
+                },
+                Self::NodeIdExhausted {
+                    attempts: right_attempts,
+                },
+            ) => left_attempts == right_attempts,
             (Self::Bencode(left), Self::Bencode(right)) => left == right,
             (Self::Io(left), Self::Io(right)) => left.kind() == right.kind(),
             _ => false,

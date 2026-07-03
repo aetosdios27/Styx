@@ -2028,6 +2028,8 @@ name = "styx-dht"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
  "sha1",
  "styx-proto",
  "thiserror",

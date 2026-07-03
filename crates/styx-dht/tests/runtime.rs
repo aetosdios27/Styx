@@ -1,10 +1,13 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Instant;
 
 use bytes::Bytes;
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use styx_dht::{
-    CompactNode, CompactPeer, DhtConfig, DhtEvent, DhtMessage, DhtQuery, DhtResponse, DhtRuntime,
-    InfoHash, NodeAddr, NodeId, RuntimeAction, TokenManager, TransactionKind,
+    is_bep42_ipv6_id, CompactNode, CompactPeer, DhtConfig, DhtEvent, DhtIdentityAction, DhtMessage,
+    DhtQuery, DhtResponse, DhtRuntime, ExternalIp, InfoHash, NodeAddr, NodeId, RuntimeAction,
+    TokenManager, TransactionKind,
 };
 
 #[test]
@@ -298,6 +301,40 @@ fn runtime_surfaces_external_ip_observed_in_response() {
             ip: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 88)),
         })
     );
+}
+
+#[test]
+fn runtime_external_ip_observation_requests_ipv6_bep42_restart() {
+    let mut runtime = runtime(NodeId::new([1; 20]));
+    let mut rng = ChaCha8Rng::seed_from_u64(44);
+    let ip = Ipv6Addr::new(0x2001, 0x0db8, 0x0001, 0x0002, 0, 0, 0, 1);
+
+    let action = runtime
+        .observe_external_ip_for_identity(ExternalIp::V6(ip), &mut rng)
+        .unwrap()
+        .unwrap();
+
+    assert!(matches!(
+        action,
+        DhtIdentityAction::RestartWithNodeId { identity }
+            if is_bep42_ipv6_id(ip, identity.node_id.as_bytes())
+    ));
+}
+
+#[test]
+fn runtime_external_ip_observation_is_stable_after_valid_restart() {
+    let mut runtime = runtime(NodeId::new([1; 20]));
+    let mut rng = ChaCha8Rng::seed_from_u64(45);
+    let ip = Ipv6Addr::new(0x2001, 0x0db8, 0x0001, 0x0002, 0, 0, 0, 2);
+
+    runtime
+        .observe_external_ip_for_identity(ExternalIp::V6(ip), &mut rng)
+        .unwrap();
+    let action = runtime
+        .observe_external_ip_for_identity(ExternalIp::V6(ip), &mut rng)
+        .unwrap();
+
+    assert_eq!(action, None);
 }
 
 fn runtime(id: NodeId) -> DhtRuntime {

@@ -36,6 +36,30 @@ fn routing_cache_expires_stale_entries() {
         .is_empty());
 }
 
+#[test]
+fn routing_cache_filters_local_node_id_from_entries() {
+    let now = Instant::now();
+    let local_id = NodeId::new([7; 20]);
+    let remote = RoutingCacheEntry {
+        id: NodeId::new([8; 20]),
+        addr: addr(8),
+        last_seen: now,
+    };
+    let cache = RoutingCache::from_entries(
+        local_id,
+        vec![
+            RoutingCacheEntry {
+                id: local_id,
+                addr: addr(7),
+                last_seen: now,
+            },
+            remote,
+        ],
+    );
+
+    assert_eq!(cache.entries(now, Duration::from_secs(60)), vec![remote]);
+}
+
 fn addr(last_octet: u8) -> NodeAddr {
     NodeAddr::new(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(203, 0, 113, last_octet)),

@@ -3,11 +3,12 @@ use std::net::IpAddr;
 use std::time::Instant;
 
 use crate::{
-    CompactNode, CompactPeer, DhtConfig, DhtError, DhtMessage, DhtNode, DhtQuery, DhtResponse,
-    InfoHash, Lookup, LookupKind, NodeAddr, NodeId, TokenManager, TransactionId, TransactionKind,
-    TransactionTable, K_BUCKET_SIZE,
+    CompactNode, CompactPeer, DhtConfig, DhtError, DhtIdentityAction, DhtIdentityManager,
+    DhtMessage, DhtNode, DhtQuery, DhtResponse, ExternalIp, InfoHash, Lookup, LookupKind, NodeAddr,
+    NodeId, TokenManager, TransactionId, TransactionKind, TransactionTable, K_BUCKET_SIZE,
 };
 use bytes::Bytes;
+use rand::{CryptoRng, RngCore};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DhtEvent {
@@ -56,6 +57,7 @@ pub struct DhtRuntime {
     transactions: TransactionTable,
     get_peers_lookups: HashMap<InfoHash, Lookup>,
     announce_tokens: HashMap<(InfoHash, NodeAddr), Bytes>,
+    identity: DhtIdentityManager,
     next_transaction: u16,
 }
 
@@ -68,6 +70,7 @@ impl DhtRuntime {
             config,
             get_peers_lookups: HashMap::new(),
             announce_tokens: HashMap::new(),
+            identity: DhtIdentityManager::new(),
             next_transaction: 0,
         })
     }
@@ -260,6 +263,17 @@ impl DhtRuntime {
                 })
             })
             .collect()
+    }
+
+    pub fn observe_external_ip_for_identity<R>(
+        &mut self,
+        external_ip: ExternalIp,
+        rng: &mut R,
+    ) -> Result<Option<DhtIdentityAction>, DhtError>
+    where
+        R: RngCore + CryptoRng,
+    {
+        self.identity.observe_external_ip(external_ip, rng)
     }
 
     #[must_use]

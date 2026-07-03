@@ -1,6 +1,8 @@
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-use styx_dht::{generate_bep42_ipv4_id, is_bep42_ipv4_id};
+use styx_dht::{
+    generate_bep42_ipv4_id, generate_bep42_ipv6_id, is_bep42_ipv4_id, is_bep42_ipv6_id,
+};
 
 #[test]
 fn bep42_validation_accepts_official_ipv4_test_vectors() {
@@ -48,6 +50,28 @@ fn bep42_generation_produces_valid_id_for_ipv4() {
 
     assert!(is_bep42_ipv4_id(ip, id.as_bytes()));
     assert_eq!(id.as_bytes()[19], 0x42);
+}
+
+#[test]
+fn bep42_ipv6_generation_produces_valid_id() {
+    let ip = Ipv6Addr::new(
+        0x2001, 0x0db8, 0x85a3, 0x0000, 0x1111, 0x2222, 0x3333, 0x4444,
+    );
+    let id = generate_bep42_ipv6_id(ip, 0x5a, [7; 16]);
+
+    assert!(is_bep42_ipv6_id(ip, id.as_bytes()));
+}
+
+#[test]
+fn bep42_ipv6_validation_rejects_wrong_prefix() {
+    let ip = Ipv6Addr::new(
+        0x2001, 0x0db8, 0x85a3, 0x0000, 0x1111, 0x2222, 0x3333, 0x4444,
+    );
+    let mut id = *generate_bep42_ipv6_id(ip, 0x5a, [7; 16]).as_bytes();
+
+    id[0] ^= 0x80;
+
+    assert!(!is_bep42_ipv6_id(ip, &id));
 }
 
 fn hex20(input: &str) -> [u8; 20] {
