@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/styx-app",
     "crates/styx-core",
     "crates/styx-dht",
     "crates/styx-utp",

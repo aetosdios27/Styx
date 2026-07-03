@@ -10,6 +10,7 @@ crossterm = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+styx-app = { path = "../../crates/styx-app" }
 styx-proto = { path = "../../crates/styx-proto" }
 thiserror = { workspace = true }
 tokio = { workspace = true }

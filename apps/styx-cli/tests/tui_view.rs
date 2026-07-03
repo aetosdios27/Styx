@@ -1,11 +1,8 @@
 use ratatui::{backend::TestBackend, Terminal};
-use styx_cli::{
-    format::InfoHashHex,
-    model::{AppSnapshot, LogLevel, LogLine, PeerRow, TorrentRow, TorrentStatus},
-    tui::{
-        state::{ActiveTab, TuiState},
-        view::render,
-    },
+use styx_app::{AppSnapshot, InfoHashHex, LogLevel, LogLine, PeerRow, TorrentRow, TorrentStatus};
+use styx_cli::tui::{
+    state::{ActiveTab, TuiState},
+    view::render,
 };
 
 #[test]

@@ -2,7 +2,7 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::error::CliError;
+use crate::error::AppError;
 
 const HEX_LEN: usize = 40;
 const SPARKLINE_LEVELS: [char; 8] = ['_', '.', ':', '-', '=', '+', '*', '#'];
@@ -37,11 +37,11 @@ impl fmt::Display for InfoHashHex {
 }
 
 impl FromStr for InfoHashHex {
-    type Err = CliError;
+    type Err = AppError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value.len() != HEX_LEN {
-            return Err(CliError::InvalidInfoHashLength);
+            return Err(AppError::InvalidInfoHashLength);
         }
 
         let mut bytes = [0_u8; 20];
@@ -126,12 +126,12 @@ pub fn sparkline(samples: &[u64], width: usize) -> String {
         .collect()
 }
 
-fn decode_hex(byte: u8, index: usize) -> Result<u8, CliError> {
+fn decode_hex(byte: u8, index: usize) -> Result<u8, AppError> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(CliError::InvalidInfoHashHex {
+        _ => Err(AppError::InvalidInfoHashHex {
             index,
             byte: byte as char,
         }),

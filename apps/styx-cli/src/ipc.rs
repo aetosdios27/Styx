@@ -1,11 +1,8 @@
 use serde::de::DeserializeOwned;
+use styx_app::{CommandResponseEnvelope, ControlCommand, TorrentRuntime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::{
-    commands::{CommandResponseEnvelope, ControlCommand},
-    error::CliError,
-    runtime::TorrentRuntime,
-};
+use crate::error::CliError;
 
 pub fn encode_command(command: &ControlCommand) -> Result<Vec<u8>, CliError> {
     encode_line(command)
@@ -53,7 +50,7 @@ pub async fn serve_unix_socket(
 #[cfg(not(unix))]
 pub async fn serve_unix_socket(
     _path: &std::path::Path,
-    _runtime: impl crate::runtime::TorrentRuntime + Send + 'static,
+    _runtime: impl TorrentRuntime + Send + 'static,
 ) -> Result<(), CliError> {
     Err(CliError::UnsupportedIpc)
 }
@@ -93,7 +90,9 @@ where
     let mut reader = BufReader::new(stream);
     let mut request = Vec::new();
     reader.read_until(b'\n', &mut request).await?;
-    let response = match decode_command(&request).and_then(|command| runtime.apply(command)) {
+    let response = match decode_command(&request)
+        .and_then(|command| runtime.apply(command).map_err(crate::error::CliError::from))
+    {
         Ok(response) => CommandResponseEnvelope::ok(response),
         Err(error) => CommandResponseEnvelope::err(error.to_string()),
     };

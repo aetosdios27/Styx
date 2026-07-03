@@ -1,7 +1,5 @@
-use styx_cli::{
-    headless::{run_headless_once, HeadlessOptions},
-    runtime::MemoryRuntime,
-};
+use styx_app::MemoryRuntime;
+use styx_cli::headless::{run_headless_once, HeadlessOptions};
 
 #[test]
 fn headless_once_writes_json_lines() {

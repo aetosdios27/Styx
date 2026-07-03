@@ -1,7 +1,5 @@
-use styx_cli::{
-    commands::{CommandEnvelope, CommandResponseEnvelope, ControlCommand},
-    ipc::{decode_command, encode_command, encode_response},
-};
+use styx_app::{CommandEnvelope, CommandResponseEnvelope, ControlCommand};
+use styx_cli::ipc::{decode_command, encode_command, encode_response};
 
 #[test]
 fn command_codec_rejects_trailing_json() {

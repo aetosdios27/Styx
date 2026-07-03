@@ -1,14 +1,9 @@
 //! Command-line and terminal UI boundary for Styx.
 
 pub mod args;
-pub mod commands;
 pub mod error;
-pub mod events;
-pub mod format;
 pub mod headless;
 pub mod ipc;
-pub mod model;
-pub mod runtime;
 pub mod tui;
 
 use std::{io::Write, str::FromStr};
@@ -17,11 +12,11 @@ use anyhow::Result;
 
 use crate::{
     args::{Cli, Command},
-    commands::{CommandResponseEnvelope, ControlCommand},
-    error::CliError,
     headless::{run_default_headless, HeadlessOptions},
     ipc::send_unix_command,
-    runtime::{MemoryRuntime, TorrentRuntime},
+};
+use styx_app::{
+    AppError, CommandResponseEnvelope, ControlCommand, InfoHashHex, MemoryRuntime, TorrentRuntime,
 };
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -55,9 +50,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-pub fn run_command_once(cli: Cli, mut writer: impl Write) -> Result<(), CliError> {
+pub fn run_command_once(cli: Cli, mut writer: impl Write) -> Result<(), AppError> {
     let Some(command) = cli.command.as_ref() else {
-        let response = CommandResponseEnvelope::ok(crate::commands::CommandResponse::Status {
+        let response = CommandResponseEnvelope::ok(styx_app::CommandResponse::Status {
             snapshot: MemoryRuntime::default().snapshot(),
         });
         serde_json::to_writer(&mut writer, &response)?;
@@ -76,7 +71,7 @@ pub fn run_command_once(cli: Cli, mut writer: impl Write) -> Result<(), CliError
     Ok(())
 }
 
-fn control_command(command: &Command) -> Result<ControlCommand, CliError> {
+fn control_command(command: &Command) -> Result<ControlCommand, AppError> {
     Ok(match command {
         Command::Add {
             source,
@@ -86,13 +81,13 @@ fn control_command(command: &Command) -> Result<ControlCommand, CliError> {
             destination: destination.clone(),
         },
         Command::Remove { info_hash } => ControlCommand::Remove {
-            info_hash: crate::format::InfoHashHex::from_str(info_hash)?,
+            info_hash: InfoHashHex::from_str(info_hash)?,
         },
         Command::Pause { info_hash } => ControlCommand::Pause {
-            info_hash: crate::format::InfoHashHex::from_str(info_hash)?,
+            info_hash: InfoHashHex::from_str(info_hash)?,
         },
         Command::Resume { info_hash } => ControlCommand::Resume {
-            info_hash: crate::format::InfoHashHex::from_str(info_hash)?,
+            info_hash: InfoHashHex::from_str(info_hash)?,
         },
         Command::Status => ControlCommand::Status,
     })

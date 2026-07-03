@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use styx_cli::format::{format_bytes, format_percent, format_rate, sparkline, InfoHashHex};
+use styx_app::format::{format_bytes, format_percent, format_rate, sparkline, InfoHashHex};
 
 #[test]
 fn info_hash_hex_accepts_forty_hex_characters() {

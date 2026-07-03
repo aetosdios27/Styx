@@ -4,14 +4,14 @@ use styx_proto::{decode_torrent, FileMode, TorrentMetainfo};
 
 use crate::{
     commands::{CommandResponse, ControlCommand},
-    error::CliError,
+    error::AppError,
     events::AppEvent,
     format::InfoHashHex,
     model::{AppSnapshot, LogLevel, LogLine, SessionTotals, TorrentRow, TorrentStatus},
 };
 
 pub trait TorrentRuntime {
-    fn apply(&mut self, command: ControlCommand) -> Result<CommandResponse, CliError>;
+    fn apply(&mut self, command: ControlCommand) -> Result<CommandResponse, AppError>;
     fn snapshot(&self) -> AppSnapshot;
     fn tick(&mut self) -> Vec<AppEvent>;
 }
@@ -28,7 +28,7 @@ struct TorrentEntry {
 }
 
 impl TorrentRuntime for MemoryRuntime {
-    fn apply(&mut self, command: ControlCommand) -> Result<CommandResponse, CliError> {
+    fn apply(&mut self, command: ControlCommand) -> Result<CommandResponse, AppError> {
         match command {
             ControlCommand::Add {
                 source,
@@ -37,7 +37,7 @@ impl TorrentRuntime for MemoryRuntime {
             ControlCommand::Remove { info_hash } => {
                 self.torrents
                     .remove(&info_hash)
-                    .ok_or_else(|| CliError::UnknownTorrent(info_hash.to_string()))?;
+                    .ok_or_else(|| AppError::UnknownTorrent(info_hash.to_string()))?;
                 self.logs.push(LogLine {
                     level: LogLevel::Info,
                     message: format!("removed torrent {info_hash}"),
@@ -92,18 +92,18 @@ impl MemoryRuntime {
         &mut self,
         source: PathBuf,
         destination: Option<PathBuf>,
-    ) -> Result<CommandResponse, CliError> {
-        let bytes = fs::read(&source).map_err(|source_error| CliError::ReadTorrent {
+    ) -> Result<CommandResponse, AppError> {
+        let bytes = fs::read(&source).map_err(|source_error| AppError::ReadTorrent {
             path: source.clone(),
             source: source_error,
         })?;
-        let meta = decode_torrent(&bytes).map_err(|source_error| CliError::ParseTorrent {
+        let meta = decode_torrent(&bytes).map_err(|source_error| AppError::ParseTorrent {
             path: source.clone(),
             source: source_error,
         })?;
         let info_hash = InfoHashHex::new(*meta.info_hash_v1.as_bytes());
         if self.torrents.contains_key(&info_hash) {
-            return Err(CliError::DuplicateTorrent(info_hash.to_string()));
+            return Err(AppError::DuplicateTorrent(info_hash.to_string()));
         }
 
         let name = String::from_utf8_lossy(&meta.info.name).into_owned();
@@ -129,10 +129,10 @@ impl MemoryRuntime {
         Ok(CommandResponse::TorrentAdded { info_hash, name })
     }
 
-    fn entry_mut(&mut self, info_hash: InfoHashHex) -> Result<&mut TorrentEntry, CliError> {
+    fn entry_mut(&mut self, info_hash: InfoHashHex) -> Result<&mut TorrentEntry, AppError> {
         self.torrents
             .get_mut(&info_hash)
-            .ok_or_else(|| CliError::UnknownTorrent(info_hash.to_string()))
+            .ok_or_else(|| AppError::UnknownTorrent(info_hash.to_string()))
     }
 }
 

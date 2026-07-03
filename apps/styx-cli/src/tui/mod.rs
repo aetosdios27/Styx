@@ -9,8 +9,9 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use styx_app::TorrentRuntime;
 
-use crate::{error::CliError, runtime::TorrentRuntime};
+use crate::error::CliError;
 
 use self::state::{ActiveTab, TuiCommand, TuiState};
 

@@ -1,4 +1,4 @@
-use styx_cli::{
+use styx_app::{
     events::AppEvent,
     format::InfoHashHex,
     model::{AppSnapshot, LogLevel, TorrentRow, TorrentStatus},

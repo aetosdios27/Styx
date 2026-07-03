@@ -1,7 +1,13 @@
 /target
 target/
 
+# Frontend package manager and build output.
+node_modules/
+dist/
+apps/styx-gui/gen/
+
 # Local agent context, not project source.
 /.agents/
 /AGENTS.md
 /ROADMAP.md
+/.blogs/

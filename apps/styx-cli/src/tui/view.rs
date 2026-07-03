@@ -5,13 +5,11 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, Tabs},
 };
-
-use crate::{
-    format::{format_bytes, format_percent, format_rate},
-    model::{AppSnapshot, LogLine, PeerRow, TorrentRow},
-    tui::state::{ActiveTab, TuiState},
+use styx_app::{
+    format_bytes, format_percent, format_rate, AppSnapshot, LogLine, PeerRow, TorrentRow,
 };
 
+use crate::tui::state::{ActiveTab, TuiState};
 pub fn render(frame: &mut Frame<'_>, snapshot: &AppSnapshot, state: &TuiState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
