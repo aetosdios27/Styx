@@ -55,4 +55,13 @@ pub enum Command {
         #[arg(long, default_value_t = 6881, value_name = "PORT")]
         listen_port: u16,
     },
+    #[command(about = "Download a full v1 torrent through the runtime MVP path")]
+    Download {
+        #[arg(long, value_name = "TORRENT")]
+        torrent: PathBuf,
+        #[arg(long, value_name = "DIR")]
+        dest: PathBuf,
+        #[arg(long, default_value_t = 6881, value_name = "PORT")]
+        listen_port: u16,
+    },
 }

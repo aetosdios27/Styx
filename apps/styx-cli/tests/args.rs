@@ -67,3 +67,26 @@ fn cli_parses_smoke_command() {
         })
     );
 }
+
+#[test]
+fn cli_parses_download_command() {
+    let cli = Cli::parse_from([
+        "styx-cli",
+        "download",
+        "--torrent",
+        "ubuntu.torrent",
+        "--dest",
+        "/tmp/styx-download",
+        "--listen-port",
+        "6999",
+    ]);
+
+    assert_eq!(
+        cli.command,
+        Some(Command::Download {
+            torrent: PathBuf::from("ubuntu.torrent"),
+            dest: PathBuf::from("/tmp/styx-download"),
+            listen_port: 6999,
+        })
+    );
+}

@@ -2,6 +2,7 @@
 
 mod config;
 mod control;
+mod download;
 mod engine;
 mod error;
 mod peer;
@@ -18,6 +19,7 @@ mod web_seed;
 
 pub use config::{RuntimeConfig, RuntimeLimits};
 pub use control::{RuntimeCommand, TorrentCommand};
+pub use download::run_full_v1_download;
 pub use engine::RuntimeEngine;
 pub use error::{FailureScope, RetryClass, RuntimeError};
 pub use peer::{download_piece_from_peer, DownloadedPiece, PeerPieceRequest};
@@ -33,5 +35,8 @@ pub use source::{
 pub use task::TorrentTask;
 pub use torrent::{load_torrent_plan, TorrentId, TorrentPlan, TorrentSmokePlan};
 pub use tracker::{build_started_announce, select_peer_candidates};
-pub use types::{SmokeConfig, SmokeOutcome, SmokeRunConfig, SmokeStage, SmokeTarget};
-pub use web_seed::{piece_byte_range, validate_web_seed_piece_bytes};
+pub use types::{
+    DownloadOutcome, DownloadRunConfig, SmokeConfig, SmokeOutcome, SmokeRunConfig, SmokeStage,
+    SmokeTarget,
+};
+pub use web_seed::{piece_byte_range, validate_web_seed_piece_bytes, web_seed_file_url};

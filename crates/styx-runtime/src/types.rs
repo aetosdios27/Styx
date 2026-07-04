@@ -66,6 +66,39 @@ pub struct SmokeRunConfig {
     pub limits: SmokeConfig,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DownloadRunConfig {
+    pub torrent_path: PathBuf,
+    pub destination: PathBuf,
+    pub listen_port: u16,
+    pub limits: SmokeConfig,
+}
+
+impl DownloadRunConfig {
+    #[must_use]
+    pub fn default_for_paths(
+        torrent_path: impl Into<PathBuf>,
+        destination: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            torrent_path: torrent_path.into(),
+            destination: destination.into(),
+            listen_port: 6881,
+            limits: SmokeConfig::default(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), RuntimeError> {
+        self.limits.validate()?;
+        if self.listen_port == 0 {
+            return Err(RuntimeError::InvalidConfig(
+                "listen_port must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl SmokeRunConfig {
     #[must_use]
     pub fn default_for_paths(
@@ -121,6 +154,27 @@ impl SmokeConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SmokeOutcome {
     Verified { piece: u32, bytes: u64 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DownloadOutcome {
+    Complete { pieces: u32, bytes: u64 },
+}
+
+impl DownloadOutcome {
+    #[must_use]
+    pub const fn pieces(&self) -> u32 {
+        match self {
+            Self::Complete { pieces, .. } => *pieces,
+        }
+    }
+
+    #[must_use]
+    pub const fn bytes(&self) -> u64 {
+        match self {
+            Self::Complete { bytes, .. } => *bytes,
+        }
+    }
 }
 
 impl SmokeOutcome {

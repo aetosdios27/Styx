@@ -1,5 +1,7 @@
 use bytes::Bytes;
-use styx_disk::{BlockSpec, PieceIndex, PieceManager, VerificationResult};
+use styx_disk::{
+    block_specs_for_piece, BlockSpec, PieceIndex, PieceManager, ResumeSummary, VerificationResult,
+};
 
 use crate::{
     RuntimeError, RuntimeEvent, TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot,
@@ -78,6 +80,82 @@ impl TorrentTask {
                 Err(RuntimeError::PieceHashMismatch { piece: piece.get() })
             }
         }
+    }
+
+    pub async fn complete_from_piece_bytes(
+        &mut self,
+        pieces: Vec<Bytes>,
+    ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        if pieces.len() != self.plan.piece_count() as usize {
+            return Err(RuntimeError::InvalidConfig("piece byte count mismatch"));
+        }
+
+        let mut events = Vec::new();
+        if matches!(self.status, TorrentStatus::Checking) {
+            events.extend(self.transition(TorrentStatus::Discovering)?);
+        }
+        if matches!(self.status, TorrentStatus::Discovering) {
+            events.extend(self.transition(TorrentStatus::Downloading)?);
+        }
+
+        for (raw_piece, piece_bytes) in pieces.into_iter().enumerate() {
+            let piece = PieceIndex::new(raw_piece as u32);
+            let specs = block_specs_for_piece(piece, self.plan.piece_length(piece)?)?;
+            let mut offset = 0_usize;
+            let mut blocks = Vec::with_capacity(specs.len());
+            for spec in specs {
+                let end = offset + spec.length().get() as usize;
+                let Some(slice) = piece_bytes.get(offset..end) else {
+                    return Err(RuntimeError::InvalidWebSeedLength {
+                        piece: piece.get(),
+                        expected: self.plan.piece_length(piece)? as usize,
+                        actual: piece_bytes.len(),
+                    });
+                };
+                blocks.push((spec, Bytes::copy_from_slice(slice)));
+                offset = end;
+            }
+            if offset != piece_bytes.len() {
+                return Err(RuntimeError::InvalidWebSeedLength {
+                    piece: piece.get(),
+                    expected: self.plan.piece_length(piece)? as usize,
+                    actual: piece_bytes.len(),
+                });
+            }
+            if !self.pieces.has_piece(piece) {
+                events.extend(self.accept_piece_blocks(piece, blocks).await?);
+            }
+        }
+
+        if self.pieces.verified_piece_count() == self.plan.piece_count() {
+            events.extend(self.transition(TorrentStatus::Complete)?);
+            events.push(RuntimeEvent::TaskCompleted {
+                torrent: self.plan.id,
+            });
+        }
+        Ok(events)
+    }
+
+    pub fn mark_failed(&mut self, reason: impl Into<String>) -> Vec<RuntimeEvent> {
+        self.status = TorrentStatus::Failed;
+        vec![RuntimeEvent::TaskFailed {
+            torrent: self.plan.id,
+            reason: reason.into(),
+        }]
+    }
+
+    pub async fn resume_verify(&mut self) -> Result<ResumeSummary, RuntimeError> {
+        let summary = self.pieces.resume_verify().await?;
+        let mut verified_bytes = 0_u64;
+        for raw_piece in 0..self.plan.piece_count() {
+            let piece = PieceIndex::new(raw_piece);
+            if self.pieces.has_piece(piece) {
+                verified_bytes =
+                    verified_bytes.saturating_add(u64::from(self.plan.piece_length(piece)?));
+            }
+        }
+        self.verified_bytes = verified_bytes;
+        Ok(summary)
     }
 
     #[must_use]

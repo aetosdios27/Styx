@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use bytes::Bytes;
-use styx_disk::{BlockSpec, PieceIndex};
+use styx_disk::{BlockSpec, PieceIndex, ResumeSummary};
 
 use crate::{
     RuntimeCommand, RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeSnapshot, TorrentCommand,
@@ -65,6 +65,90 @@ impl RuntimeEngine {
             self.push_event(event);
         }
         Ok(())
+    }
+
+    pub async fn complete_from_piece_bytes(
+        &mut self,
+        id: TorrentId,
+        pieces: Vec<Bytes>,
+    ) -> Result<(), RuntimeError> {
+        let task = self
+            .tasks
+            .get_mut(&id)
+            .ok_or(RuntimeError::InvalidConfig("unknown torrent"))?;
+        let events = task.complete_from_piece_bytes(pieces).await?;
+        for event in events {
+            self.push_event(event);
+        }
+        Ok(())
+    }
+
+    pub async fn complete_from_source_piece_bytes(
+        &mut self,
+        id: TorrentId,
+        source: impl Into<String>,
+        pieces: Vec<Bytes>,
+    ) -> Result<(), RuntimeError> {
+        let source = source.into();
+        match self.complete_from_piece_bytes(id, pieces).await {
+            Ok(()) => Ok(()),
+            Err(RuntimeError::PieceHashMismatch { piece }) => {
+                self.push_event(RuntimeEvent::SourceQuarantined {
+                    torrent: id,
+                    source: source.clone(),
+                });
+                Err(RuntimeError::SourceFailed {
+                    source_id: source,
+                    scope: crate::FailureScope::SourceLocal,
+                    retry: crate::RetryClass::Quarantine,
+                    reason: format!("piece {piece} failed hash verification"),
+                })
+            }
+            Err(err) => {
+                self.push_event(RuntimeEvent::SourceFailed {
+                    torrent: id,
+                    source: source.clone(),
+                    reason: err.to_string(),
+                });
+                Err(RuntimeError::SourceFailed {
+                    source_id: source,
+                    scope: crate::FailureScope::SourceLocal,
+                    retry: crate::RetryClass::Retryable,
+                    reason: err.to_string(),
+                })
+            }
+        }
+    }
+
+    pub async fn complete_from_sources(
+        &mut self,
+        id: TorrentId,
+        sources: Vec<(&str, Vec<Bytes>)>,
+    ) -> Result<(), RuntimeError> {
+        let mut last_error = "all sources failed".to_owned();
+        for (source, pieces) in sources {
+            match self
+                .complete_from_source_piece_bytes(id, source.to_owned(), pieces)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(err) => last_error = err.to_string(),
+            }
+        }
+        if let Some(task) = self.tasks.get_mut(&id) {
+            for event in task.mark_failed("all sources failed") {
+                self.push_event(event);
+            }
+        }
+        Err(RuntimeError::AllPeersFailed { last_error })
+    }
+
+    pub async fn resume_verify(&mut self, id: TorrentId) -> Result<ResumeSummary, RuntimeError> {
+        let task = self
+            .tasks
+            .get_mut(&id)
+            .ok_or(RuntimeError::InvalidConfig("unknown torrent"))?;
+        task.resume_verify().await
     }
 
     fn add_plan(&mut self, plan: TorrentPlan) -> Result<(), RuntimeError> {

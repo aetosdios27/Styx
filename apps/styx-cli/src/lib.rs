@@ -64,6 +64,33 @@ pub async fn run(cli: Cli) -> Result<()> {
             println!();
             return Ok(());
         }
+        if let Command::Download {
+            torrent,
+            dest,
+            listen_port,
+        } = command
+        {
+            if cli.ipc.is_some() {
+                return Err(CliError::UnsupportedMemoryCommand.into());
+            }
+            let mut config =
+                styx_runtime::DownloadRunConfig::default_for_paths(torrent.clone(), dest.clone());
+            config.listen_port = *listen_port;
+            let outcome = styx_runtime::run_full_v1_download(config).await?;
+            serde_json::to_writer(
+                std::io::stdout(),
+                &json!({
+                    "ok": true,
+                    "response": {
+                        "type": "download_complete",
+                        "pieces": outcome.pieces(),
+                        "bytes": outcome.bytes()
+                    }
+                }),
+            )?;
+            println!();
+            return Ok(());
+        }
 
         if let Some(path) = &cli.ipc {
             let command = control_command(command)?;
@@ -120,6 +147,8 @@ fn control_command(command: &Command) -> Result<ControlCommand, CliError> {
             info_hash: InfoHashHex::from_str(info_hash)?,
         },
         Command::Status => ControlCommand::Status,
-        Command::Smoke { .. } => return Err(CliError::UnsupportedMemoryCommand),
+        Command::Smoke { .. } | Command::Download { .. } => {
+            return Err(CliError::UnsupportedMemoryCommand)
+        }
     })
 }
