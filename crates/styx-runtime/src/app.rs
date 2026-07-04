@@ -5,13 +5,16 @@ use styx_app::{
     error::AppError,
     events::AppEvent,
     format::InfoHashHex,
-    model::{AppSnapshot, LogLine, SessionTotals, SpeedSample, TorrentRow, TorrentStatus as AppStatus},
+    model::{
+        AppSnapshot, LogLevel, LogLine, SessionTotals, SpeedSample, TorrentRow,
+        TorrentStatus as AppStatus,
+    },
     TorrentRuntime,
 };
 
 use crate::{
-    RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, TorrentCommand,
-    TorrentId, TorrentPlan, TorrentSnapshot, TorrentStatus,
+    RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, RuntimeSnapshot,
+    TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot, TorrentStatus,
 };
 
 const DEFAULT_SPEED_SAMPLES: usize = 60;
@@ -131,14 +134,23 @@ impl TorrentRuntime for AppRuntime {
     }
 
     fn tick(&mut self) -> Vec<AppEvent> {
-        let app_events: Vec<AppEvent> = self
-            .engine
-            .drain_events()
-            .into_iter()
-            .filter_map(map_runtime_event)
-            .collect();
-
+        let engine_events = self.engine.drain_events();
         let snap = self.engine.snapshot();
+
+        let mut app_events = Vec::new();
+
+        for event in engine_events {
+            if let Some(app_event) = map_to_app_event(&event, &snap) {
+                app_events.push(app_event);
+            }
+            if let Some(log) = map_to_log_line(&event) {
+                if self.logs.len() >= MAX_LOG_LINES {
+                    self.logs.pop_front();
+                }
+                self.logs.push_back(log);
+            }
+        }
+
         let total_down: u64 = snap.torrents.iter().map(|t| t.down_rate).sum();
         let total_up: u64 = snap.torrents.iter().map(|t| t.up_rate).sum();
         if self.speed.len() >= DEFAULT_SPEED_SAMPLES {
@@ -150,6 +162,7 @@ impl TorrentRuntime for AppRuntime {
             up_rate: total_up,
         });
         self.tick_count += 1;
+
         app_events
     }
 }
@@ -168,14 +181,52 @@ fn map_runtime_error(err: RuntimeError) -> AppError {
     }
 }
 
-fn map_runtime_event(event: RuntimeEvent) -> Option<AppEvent> {
+fn map_to_app_event(event: &RuntimeEvent, snap: &RuntimeSnapshot) -> Option<AppEvent> {
     match event {
-        RuntimeEvent::TorrentAdded { torrent } => Some(AppEvent::TorrentAdded {
-            info_hash: InfoHashHex::new(*torrent.as_bytes()),
-            name: String::new(),
-        }),
+        RuntimeEvent::TorrentAdded { torrent } => {
+            let info_hash = InfoHashHex::new(*torrent.as_bytes());
+            let name = snap
+                .torrents
+                .iter()
+                .find(|t| t.id == *torrent)
+                .map(|t| t.name.clone())
+                .unwrap_or_default();
+            Some(AppEvent::TorrentAdded { info_hash, name })
+        }
         RuntimeEvent::TorrentRemoved { torrent } => Some(AppEvent::TorrentRemoved {
             info_hash: InfoHashHex::new(*torrent.as_bytes()),
+        }),
+        _ => None,
+    }
+}
+
+fn map_to_log_line(event: &RuntimeEvent) -> Option<LogLine> {
+    match event {
+        RuntimeEvent::TorrentAdded { torrent } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!("torrent {:?} added", torrent),
+        }),
+        RuntimeEvent::TorrentRemoved { torrent } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!("torrent {:?} removed", torrent),
+        }),
+        RuntimeEvent::StateChanged { torrent, from, to } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!("torrent {torrent:?}: {from:?} → {to:?}"),
+        }),
+        RuntimeEvent::SourceFailed {
+            torrent, source, ..
+        } => Some(LogLine {
+            level: LogLevel::Warn,
+            message: format!("source {source} failed for torrent {torrent:?}"),
+        }),
+        RuntimeEvent::TaskFailed { torrent, reason } => Some(LogLine {
+            level: LogLevel::Error,
+            message: format!("torrent {torrent:?} failed: {reason}"),
+        }),
+        RuntimeEvent::TaskCompleted { torrent } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!("torrent {torrent:?} completed"),
         }),
         _ => None,
     }
