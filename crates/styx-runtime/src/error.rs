@@ -208,5 +208,84 @@ impl PartialEq for RuntimeError {
                 (Self::Backpressure { stage: left }, Self::Backpressure { stage: right }) if left == right
             )
             || matches!((self, other), (Self::Cancelled, Self::Cancelled))
+            || matches!((self, other), (Self::Io(_), Self::Io(_)))
+            || matches!(
+                (self, other),
+                (Self::Torrent(a), Self::Torrent(b)) if a == b
+            )
+            || matches!((self, other), (Self::Tracker(_), Self::Tracker(_)))
+            || matches!((self, other), (Self::PeerWire(_), Self::PeerWire(_)))
+            || matches!(
+                (self, other),
+                (Self::Disk(a), Self::Disk(b)) if a == b
+            )
+            || matches!((self, other), (Self::Http(_), Self::Http(_)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_eq_torrent_variant_compares_inner_value() {
+        use styx_proto::TorrentMetainfoError;
+
+        let a = RuntimeError::Torrent(TorrentMetainfoError::MissingInfo);
+        let b = RuntimeError::Torrent(TorrentMetainfoError::MissingInfo);
+        let c = RuntimeError::Torrent(TorrentMetainfoError::MissingField {
+            field: "name",
+            context: "info",
+        });
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn partial_eq_disk_variant_compares_inner_value() {
+        use styx_disk::DiskError;
+
+        let a = RuntimeError::Disk(DiskError::HashMismatch);
+        let b = RuntimeError::Disk(DiskError::HashMismatch);
+        let c = RuntimeError::Disk(DiskError::InvalidPieceLength);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn partial_eq_io_variant_uses_discriminant() {
+        let a = RuntimeError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, ""));
+        let b = RuntimeError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, ""));
+        let c = RuntimeError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "",
+        ));
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+        assert_ne!(a, RuntimeError::Cancelled);
+    }
+
+    #[test]
+    fn partial_eq_tracker_uses_discriminant() {
+        let a = RuntimeError::Tracker(TrackerError::InvalidUrl);
+        let b = RuntimeError::Tracker(TrackerError::InvalidUrl);
+        assert_eq!(a, b);
+        assert_ne!(a, RuntimeError::Cancelled);
+    }
+
+    #[test]
+    fn partial_eq_peer_wire_uses_discriminant() {
+        let a = RuntimeError::PeerWire(PeerWireError::InfoHashMismatch);
+        let b = RuntimeError::PeerWire(PeerWireError::InfoHashMismatch);
+        assert_eq!(a, b);
+        assert_ne!(a, RuntimeError::Cancelled);
+    }
+
+    #[test]
+    fn partial_eq_existing_unit_variants_still_work() {
+        assert_eq!(RuntimeError::Cancelled, RuntimeError::Cancelled);
+        assert_eq!(RuntimeError::NoHttpTracker, RuntimeError::NoHttpTracker);
+        assert_eq!(RuntimeError::PeerChoked, RuntimeError::PeerChoked);
+        assert_ne!(RuntimeError::Cancelled, RuntimeError::NoHttpTracker);
     }
 }

@@ -107,9 +107,13 @@ impl DiskPlan {
     }
 
     /// Number of pieces in the torrent.
+    ///
+    /// This value is validated during [`DiskPlan::from_metainfo`], so the
+    /// conversion from `usize` to `u32` cannot fail at this point.
     #[must_use]
     pub fn piece_count(&self) -> u32 {
-        u32::try_from(self.piece_lengths.len()).unwrap_or(u32::MAX)
+        u32::try_from(self.piece_lengths.len())
+            .expect("piece count must fit in u32 after DiskPlan construction")
     }
 
     /// Length of a piece in bytes.
@@ -303,12 +307,16 @@ fn is_safe_component(bytes: &[u8]) -> bool {
 }
 
 fn ensure_relative_target(root: &Path, target: &Path) -> Result<(), DiskError> {
-    if target.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::Prefix(_) | Component::RootDir
-        )
-    }) && root.is_relative()
+    if target
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(DiskError::UnsafePath);
+    }
+    if root.is_relative()
+        && target
+            .components()
+            .any(|component| matches!(component, Component::RootDir))
     {
         return Err(DiskError::UnsafePath);
     }
@@ -475,6 +483,29 @@ mod tests {
         let err = DiskPlan::from_metainfo(&meta, "/downloads").unwrap_err();
 
         assert_eq!(err, DiskError::InvalidPieceLength);
+    }
+
+    #[test]
+    fn ensure_relative_target_rejects_parent_dir_with_absolute_root() {
+        let root = std::path::Path::new("/downloads");
+        let target = std::path::Path::new("/downloads/../etc/passwd");
+        let err = super::ensure_relative_target(root, target);
+        assert_eq!(err, Err(DiskError::UnsafePath));
+    }
+
+    #[test]
+    fn ensure_relative_target_rejects_parent_dir_with_relative_root() {
+        let root = std::path::Path::new("downloads");
+        let target = std::path::Path::new("downloads/../etc/passwd");
+        let err = super::ensure_relative_target(root, target);
+        assert_eq!(err, Err(DiskError::UnsafePath));
+    }
+
+    #[test]
+    fn ensure_relative_target_accepts_legitimate_absolute_path() {
+        let root = std::path::Path::new("/downloads");
+        let target = std::path::Path::new("/downloads/subdir/file.bin");
+        assert!(super::ensure_relative_target(root, target).is_ok());
     }
 
     fn metainfo(info: TorrentInfo) -> TorrentMetainfo {

@@ -157,7 +157,7 @@ impl SourceTable {
 
     pub fn record_success(&mut self, source: SourceId) -> Result<(), RuntimeError> {
         let entry = self.entry_mut(source)?;
-        entry.state = SourceState::Fresh;
+        entry.state = SourceState::Active;
         entry.failures = 0;
         Ok(())
     }
@@ -207,5 +207,71 @@ impl SourceTable {
                 retry: crate::RetryClass::Terminal,
                 reason: "unknown source".to_owned(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use crate::{RuntimeConfig, RuntimeLimits};
+
+    use super::*;
+
+    fn create_table(candidates: Vec<SourceCandidate>) -> SourceTable {
+        let config = RuntimeConfig {
+            limits: RuntimeLimits {
+                max_sources_per_torrent: 10,
+                source_retry_limit: 3,
+                ..RuntimeLimits::default()
+            },
+            ..RuntimeConfig::default()
+        };
+        SourceTable::from_candidates(candidates, &config).unwrap()
+    }
+
+    #[test]
+    fn record_success_sets_state_to_active_not_fresh() {
+        let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 6881);
+        let peer = SourceCandidate::peer(addr);
+        let mut table = create_table(vec![peer]);
+
+        let sid = SourceId::new(1);
+        table.record_success(sid).unwrap();
+
+        assert_eq!(table.state(sid).unwrap(), SourceState::Active);
+    }
+
+    #[test]
+    fn next_candidates_does_not_return_successful_sources() {
+        let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 6881);
+        let peer = SourceCandidate::peer(addr);
+        let mut table = create_table(vec![peer]);
+
+        let sid = SourceId::new(1);
+        table.record_success(sid).unwrap();
+
+        let candidates = table.next_candidates(10);
+        assert!(
+            candidates.is_empty(),
+            "successful source should not be returned as a candidate"
+        );
+    }
+
+    #[test]
+    fn next_candidates_returns_fresh_and_cooling_down_sources() {
+        let addr1 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 6881);
+        let addr2 = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 6881);
+        let mut table = create_table(vec![
+            SourceCandidate::peer(addr1),
+            SourceCandidate::peer(addr2),
+        ]);
+
+        let sid = SourceId::new(1);
+        table.record_success(sid).unwrap();
+
+        let candidates = table.next_candidates(10);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].endpoint, SourceEndpoint::Peer(addr2));
     }
 }

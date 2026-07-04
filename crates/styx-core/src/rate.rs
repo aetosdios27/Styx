@@ -33,7 +33,7 @@ impl RateWindow {
     pub fn bytes_per_second(&mut self, now: Instant) -> u64 {
         self.prune(now);
         let total = self.samples.iter().map(|(_, bytes)| *bytes).sum::<u64>();
-        total / self.window.as_secs()
+        total / self.window.as_secs().max(1)
     }
 
     fn prune(&mut self, now: Instant) {
@@ -75,6 +75,16 @@ mod tests {
         let rate = window.bytes_per_second(start + Duration::from_secs(10));
 
         assert_eq!(rate, 200);
+    }
+
+    #[test]
+    fn bytes_per_second_handles_sub_second_window_without_panic() {
+        let start = Instant::now();
+        let mut window = RateWindow::new(Duration::from_millis(500)).unwrap();
+        window.record(start, 100);
+
+        let rate = window.bytes_per_second(start + Duration::from_millis(100));
+        assert_eq!(rate, 100);
     }
 
     #[test]

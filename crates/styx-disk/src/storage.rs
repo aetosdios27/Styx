@@ -46,7 +46,7 @@ impl DiskStore {
         if spans.len() == 1 {
             self.commit_single_file_piece(piece, spans[0], &bytes).await
         } else {
-            self.commit_multi_file_piece(&spans, &bytes).await
+            self.commit_multi_file_piece(piece, &spans, &bytes).await
         }
     }
 
@@ -84,18 +84,8 @@ impl DiskStore {
         ensure_parent(path).await?;
 
         let file_len = usize::try_from(entry.length()).map_err(|_| DiskError::IntegerOverflow)?;
-        let mut staged = match fs::read(path).await {
-            Ok(existing) => {
-                let mut existing = existing;
-                existing.resize(file_len, 0);
-                existing
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => vec![0; file_len],
-            Err(err) => return Err(DiskError::Io(err)),
-        };
         let target_range = span_file_range(span)?;
         let piece_range = span_piece_range(span)?;
-        staged[target_range].copy_from_slice(&bytes[piece_range]);
 
         let temp_path = temp_sibling_path(path, piece);
         let mut temp = OpenOptions::new()
@@ -104,7 +94,69 @@ impl DiskStore {
             .write(true)
             .open(&temp_path)
             .await?;
-        temp.write_all(&staged).await?;
+
+        match OpenOptions::new().read(true).open(path).await {
+            Ok(mut src) => {
+                let mut buf = vec![0u8; 65536];
+
+                let before_len = target_range.start;
+                let mut remaining = before_len;
+                while remaining > 0 {
+                    let to_read = remaining.min(buf.len());
+                    let n = src.read(&mut buf[..to_read]).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    temp.write_all(&buf[..n]).await?;
+                    remaining -= n;
+                }
+                if remaining > 0 {
+                    temp.write_all(&vec![0u8; remaining]).await?;
+                }
+
+                temp.write_all(&bytes[piece_range]).await?;
+
+                let after_offset = target_range.end;
+                src.seek(SeekFrom::Start(after_offset as u64)).await?;
+                let after_len = file_len - after_offset;
+                let mut remaining = after_len;
+                while remaining > 0 {
+                    let to_read = remaining.min(buf.len());
+                    let n = src.read(&mut buf[..to_read]).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    temp.write_all(&buf[..n]).await?;
+                    remaining -= n;
+                }
+                if remaining > 0 {
+                    temp.write_all(&vec![0u8; remaining]).await?;
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let buf = vec![0u8; 65536];
+
+                let before_len = target_range.start;
+                let mut remaining = before_len;
+                while remaining > 0 {
+                    let to_write = remaining.min(buf.len());
+                    temp.write_all(&buf[..to_write]).await?;
+                    remaining -= to_write;
+                }
+
+                temp.write_all(&bytes[piece_range]).await?;
+
+                let after_len = file_len - target_range.end;
+                let mut remaining = after_len;
+                while remaining > 0 {
+                    let to_write = remaining.min(buf.len());
+                    temp.write_all(&buf[..to_write]).await?;
+                    remaining -= to_write;
+                }
+            }
+            Err(err) => return Err(DiskError::Io(err)),
+        }
+
         temp.flush().await?;
         drop(temp);
         fs::rename(&temp_path, path).await?;
@@ -113,28 +165,93 @@ impl DiskStore {
 
     async fn commit_multi_file_piece(
         &self,
+        piece: PieceIndex,
         spans: &[FileSpan],
         bytes: &[u8],
     ) -> Result<(), DiskError> {
-        let mut staged = Vec::with_capacity(spans.len());
         for span in spans {
-            let piece_range = span_piece_range(*span)?;
-            staged.push((*span, Bytes::copy_from_slice(&bytes[piece_range])));
-        }
-
-        for (span, payload) in staged {
             let entry = &self.plan.files()[span.file_index];
-            ensure_parent(entry.path()).await?;
-            let mut file = OpenOptions::new()
+            let path = entry.path();
+            ensure_parent(path).await?;
+
+            let file_len =
+                usize::try_from(entry.length()).map_err(|_| DiskError::IntegerOverflow)?;
+            let target_range = span_file_range(*span)?;
+            let piece_range = span_piece_range(*span)?;
+
+            let temp_path = temp_sibling_path(path, piece);
+            let mut temp = OpenOptions::new()
                 .create(true)
-                .truncate(false)
+                .truncate(true)
                 .write(true)
-                .read(true)
-                .open(entry.path())
+                .open(&temp_path)
                 .await?;
-            file.seek(SeekFrom::Start(span.file_offset)).await?;
-            file.write_all(&payload).await?;
-            file.flush().await?;
+
+            match OpenOptions::new().read(true).open(path).await {
+                Ok(mut src) => {
+                    let mut buf = vec![0u8; 65536];
+
+                    let before_len = target_range.start;
+                    let mut remaining = before_len;
+                    while remaining > 0 {
+                        let to_read = remaining.min(buf.len());
+                        let n = src.read(&mut buf[..to_read]).await?;
+                        if n == 0 {
+                            break;
+                        }
+                        temp.write_all(&buf[..n]).await?;
+                        remaining -= n;
+                    }
+                    if remaining > 0 {
+                        temp.write_all(&vec![0u8; remaining]).await?;
+                    }
+
+                    temp.write_all(&bytes[piece_range]).await?;
+
+                    let after_offset = target_range.end;
+                    src.seek(SeekFrom::Start(after_offset as u64)).await?;
+                    let after_len = file_len - after_offset;
+                    let mut remaining = after_len;
+                    while remaining > 0 {
+                        let to_read = remaining.min(buf.len());
+                        let n = src.read(&mut buf[..to_read]).await?;
+                        if n == 0 {
+                            break;
+                        }
+                        temp.write_all(&buf[..n]).await?;
+                        remaining -= n;
+                    }
+                    if remaining > 0 {
+                        temp.write_all(&vec![0u8; remaining]).await?;
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    let buf = vec![0u8; 65536];
+
+                    let before_len = target_range.start;
+                    let mut remaining = before_len;
+                    while remaining > 0 {
+                        let to_write = remaining.min(buf.len());
+                        temp.write_all(&buf[..to_write]).await?;
+                        remaining -= to_write;
+                    }
+
+                    temp.write_all(&bytes[piece_range]).await?;
+
+                    let after_len = file_len - target_range.end;
+                    let mut remaining = after_len;
+                    while remaining > 0 {
+                        let to_write = remaining.min(buf.len());
+                        temp.write_all(&buf[..to_write]).await?;
+                        remaining -= to_write;
+                    }
+                }
+                Err(err) => return Err(DiskError::Io(err)),
+            }
+
+            temp.flush().await?;
+            drop(temp);
+            fs::rename(&temp_path, path).await?;
         }
 
         Ok(())
@@ -262,11 +379,13 @@ mod tests {
                 .unwrap(),
             vec![b'a'; 10 * 1024]
         );
+        let mut expected_b = vec![b'b'; 6 * 1024];
+        expected_b.resize(10 * 1024, 0);
         assert_eq!(
             tokio::fs::read(temp.path().join("album/b.bin"))
                 .await
                 .unwrap(),
-            vec![b'b'; 6 * 1024]
+            expected_b
         );
     }
 
