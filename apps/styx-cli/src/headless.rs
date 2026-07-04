@@ -1,10 +1,20 @@
 use std::io::Write;
 
-use styx_app::{AppError, AppEvent, MemoryRuntime, TorrentRuntime};
+use styx_app::{AppError, AppEvent, TorrentRuntime};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadlessOptions {
     pub ipc: Option<String>,
+    pub listen_port: u16,
+}
+
+impl Default for HeadlessOptions {
+    fn default() -> Self {
+        Self {
+            ipc: None,
+            listen_port: 6881,
+        }
+    }
 }
 
 pub fn run_headless_once<R, W>(
@@ -36,7 +46,14 @@ pub fn run_default_headless<W>(writer: W, options: HeadlessOptions) -> Result<()
 where
     W: Write,
 {
-    run_headless_once(MemoryRuntime::default(), writer, options)
+    let config = styx_runtime::RuntimeConfig {
+        listen_port: options.listen_port,
+        ..styx_runtime::RuntimeConfig::default()
+    };
+    let engine =
+        styx_runtime::RuntimeEngine::new(config).map_err(|e| AppError::Internal(e.to_string()))?;
+    let runtime = styx_runtime::AppRuntime::new(engine);
+    run_headless_once(runtime, writer, options)
 }
 
 fn write_event(writer: &mut impl Write, event: &AppEvent) -> Result<(), AppError> {

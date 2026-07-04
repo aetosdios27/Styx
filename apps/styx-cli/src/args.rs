@@ -7,6 +7,13 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[arg(
         long,
+        default_value_t = 6881,
+        value_name = "PORT",
+        help = "Listen port for torrent transfers"
+    )]
+    pub listen_port: u16,
+    #[arg(
+        long,
         help = "Run without rendering the terminal UI and emit JSON lines"
     )]
     pub headless: bool,

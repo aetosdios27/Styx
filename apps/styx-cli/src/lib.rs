@@ -20,6 +20,7 @@ use crate::{
 use styx_app::{
     CommandResponseEnvelope, ControlCommand, InfoHashHex, MemoryRuntime, TorrentRuntime,
 };
+use styx_runtime::{AppRuntime, RuntimeConfig, RuntimeEngine};
 
 pub async fn run(cli: Cli) -> Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -31,6 +32,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             std::io::stdout(),
             HeadlessOptions {
                 ipc: cli.ipc.as_ref().map(|path| path.display().to_string()),
+                listen_port: cli.listen_port,
             },
         )?;
         return Ok(());
@@ -103,7 +105,12 @@ pub async fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-    tui::run_tui(MemoryRuntime::default()).await?;
+    let config = RuntimeConfig {
+        listen_port: cli.listen_port,
+        ..RuntimeConfig::default()
+    };
+    let runtime = AppRuntime::new(RuntimeEngine::new(config)?);
+    tui::run_tui(runtime).await?;
     Ok(())
 }
 
