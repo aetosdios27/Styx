@@ -94,6 +94,25 @@ pub enum RuntimeEvent {
     TaskCompleted {
         torrent: TorrentId,
     },
+    IntentDeclared {
+        torrent: Option<TorrentId>,
+        kind: &'static str,
+    },
+    ValidationStarted,
+    ValidationFailed {
+        reason: String,
+    },
+    ValidationSucceeded,
+    ExecutionStarted,
+    ExecutionSucceeded,
+    ExecutionFailed {
+        reason: String,
+    },
+    RollbackStarted,
+    RollbackSucceeded,
+    RollbackFailed {
+        reason: String,
+    },
 }
 
 impl RuntimeSnapshot {
@@ -163,6 +182,16 @@ impl RuntimeEvent {
             Self::TaskCancelled { .. } => "task_cancelled",
             Self::TaskFailed { .. } => "task_failed",
             Self::TaskCompleted { .. } => "task_completed",
+            Self::IntentDeclared { .. } => "intent_declared",
+            Self::ValidationStarted => "validation_started",
+            Self::ValidationFailed { .. } => "validation_failed",
+            Self::ValidationSucceeded => "validation_succeeded",
+            Self::ExecutionStarted => "execution_started",
+            Self::ExecutionSucceeded => "execution_succeeded",
+            Self::ExecutionFailed { .. } => "execution_failed",
+            Self::RollbackStarted => "rollback_started",
+            Self::RollbackSucceeded => "rollback_succeeded",
+            Self::RollbackFailed { .. } => "rollback_failed",
         }
     }
 }

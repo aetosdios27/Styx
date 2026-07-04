@@ -5,8 +5,8 @@ use sha1::{Digest, Sha1};
 use styx_proto::{encode, BencodeValue, InfoHashV1};
 use styx_runtime::{
     IntentState, RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError,
-    RuntimeLimits, SettingsPatch, StageIntent, TorrentCommand, TorrentId, TorrentPlan,
-    TorrentStatus,
+    RuntimeEvent, RuntimeLimits, SettingsPatch, StageIntent, TorrentCommand, TorrentId,
+    TorrentPlan, TorrentStatus,
 };
 
 fn tid(byte: u8) -> TorrentId {
@@ -276,6 +276,45 @@ fn settings_intent_rollback_restores_previous_config() {
     let record = intent.execute(&mut engine).unwrap();
     engine.rollback(record.unwrap()).unwrap();
     assert_eq!(engine.config().limits, old_limits);
+}
+
+#[test]
+fn intent_declare_emits_declared_event() {
+    let (_tmp, plan) = plan();
+    let intent = StageIntent::Add {
+        plan: Box::new(plan),
+    };
+
+    let events = intent.declare();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, RuntimeEvent::IntentDeclared { .. })));
+}
+
+#[test]
+fn successful_execution_emits_success_event() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let (_tmp, plan) = plan();
+    let intent = StageIntent::Add {
+        plan: Box::new(plan),
+    };
+
+    let events = intent.run(&mut engine).unwrap();
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind()).collect();
+    assert!(kinds.contains(&"execution_succeeded"));
+}
+
+#[test]
+fn failed_validation_emits_error() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let patch = SettingsPatch {
+        listen_port: Some(0),
+        limits: None,
+    };
+    let intent = StageIntent::Settings { patch };
+
+    let result = intent.run(&mut engine);
+    assert!(result.is_err());
 }
 
 #[test]

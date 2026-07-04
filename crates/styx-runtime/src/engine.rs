@@ -45,8 +45,11 @@ impl RuntimeEngine {
                 other => return self.apply_torrent(id, other),
             },
         };
-        intent.validate(self)?;
-        intent.execute(self).map(|_| ())
+        let events = intent.run(self)?;
+        for event in events {
+            self.push_event(event);
+        }
+        Ok(())
     }
 
     #[must_use]

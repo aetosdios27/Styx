@@ -1,7 +1,4 @@
-use crate::{
-    RuntimeConfig, RuntimeEngine, RuntimeError, SettingsPatch, TorrentCommand, TorrentId,
-    TorrentPlan,
-};
+use crate::{RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, SettingsPatch, TorrentCommand, TorrentId, TorrentPlan};
 
 #[derive(Clone, Debug)]
 pub enum StageIntent {
@@ -69,6 +66,47 @@ impl StageIntent {
                     previous: Box::new(previous),
                 }))
             }
+        }
+    }
+
+    pub fn declare(&self) -> Vec<RuntimeEvent> {
+        vec![RuntimeEvent::IntentDeclared {
+            torrent: self.torrent_id(),
+            kind: self.kind_str(),
+        }]
+    }
+
+    pub fn run(&self, engine: &mut RuntimeEngine) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        let mut events = self.declare();
+
+        events.push(RuntimeEvent::ValidationStarted);
+        self.validate(engine)?;
+        events.push(RuntimeEvent::ValidationSucceeded);
+
+        events.push(RuntimeEvent::ExecutionStarted);
+        self.execute(engine)?;
+        events.push(RuntimeEvent::ExecutionSucceeded);
+
+        Ok(events)
+    }
+
+    fn torrent_id(&self) -> Option<TorrentId> {
+        match self {
+            Self::Add { plan } => Some(plan.id),
+            Self::Remove { id, .. } => Some(*id),
+            Self::Pause { id } => Some(*id),
+            Self::Resume { id } => Some(*id),
+            Self::Settings { .. } => None,
+        }
+    }
+
+    fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Add { .. } => "add",
+            Self::Remove { .. } => "remove",
+            Self::Pause { .. } => "pause",
+            Self::Resume { .. } => "resume",
+            Self::Settings { .. } => "settings",
         }
     }
 
