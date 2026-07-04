@@ -138,7 +138,7 @@ fn add_intent_execute_inserts_task() {
         plan: Box::new(plan),
     };
 
-    let record = intent.execute(&mut engine).unwrap();
+    let (record, _) = intent.execute(&mut engine).unwrap();
     assert!(engine.has_torrent(id));
     assert!(matches!(record, Some(RollbackRecord::AddRollback { .. })));
 }
@@ -152,7 +152,7 @@ fn add_intent_rollback_removes_task() {
         plan: Box::new(plan),
     };
 
-    let record = intent.execute(&mut engine).unwrap();
+    let (record, _) = intent.execute(&mut engine).unwrap();
     assert!(engine.has_torrent(id));
     engine
         .rollback(record.expect("Add execute returns AddRollback"))
@@ -168,7 +168,7 @@ fn remove_intent_execute_removes_task() {
         delete_data: false,
     };
 
-    let record = intent.execute(&mut engine).unwrap();
+    let (record, _) = intent.execute(&mut engine).unwrap();
     assert!(!engine.has_torrent(id));
     assert!(matches!(
         record,
@@ -184,7 +184,7 @@ fn remove_intent_rollback_restores_task() {
         delete_data: false,
     };
 
-    let record = intent.execute(&mut engine).unwrap();
+    let (record, _) = intent.execute(&mut engine).unwrap();
     assert!(!engine.has_torrent(id));
     engine
         .rollback(record.expect("Remove execute returns RemoveRollback"))
@@ -200,7 +200,7 @@ fn pause_intent_execute_pauses_task() {
         .unwrap();
 
     let intent = StageIntent::Pause { id };
-    let record = intent.execute(&mut engine).unwrap();
+    let (record, _) = intent.execute(&mut engine).unwrap();
     assert!(record.is_none());
     let snap = engine.snapshot();
     assert_eq!(snap.torrents[0].status, TorrentStatus::Paused);
@@ -217,7 +217,7 @@ fn resume_intent_execute_resumes_task() {
         .unwrap();
 
     let intent = StageIntent::Resume { id };
-    let record = intent.execute(&mut engine).unwrap();
+    let (record, _) = intent.execute(&mut engine).unwrap();
     assert!(record.is_none());
     let snap = engine.snapshot();
     assert_eq!(snap.torrents[0].status, TorrentStatus::Downloading);
@@ -252,7 +252,7 @@ fn settings_intent_apply_patch_updates_config() {
     let intent = StageIntent::Settings { patch };
 
     intent.validate(&engine).unwrap();
-    let record = intent.execute(&mut engine).unwrap();
+    let (record, _) = intent.execute(&mut engine).unwrap();
     assert_eq!(engine.config().limits.max_active_torrents, 16);
     assert!(matches!(
         record,
@@ -273,8 +273,10 @@ fn settings_intent_rollback_restores_previous_config() {
     };
     let intent = StageIntent::Settings { patch };
 
-    let record = intent.execute(&mut engine).unwrap();
-    engine.rollback(record.unwrap()).unwrap();
+    let (record, _) = intent.execute(&mut engine).unwrap();
+    engine
+        .rollback(record.expect("Settings execute returns SettingsRollback"))
+        .unwrap();
     assert_eq!(engine.config().limits, old_limits);
 }
 
@@ -299,7 +301,8 @@ fn successful_execution_emits_success_event() {
         plan: Box::new(plan),
     };
 
-    let events = intent.run(&mut engine).unwrap();
+    let (events, result) = intent.run(&mut engine);
+    assert!(result.is_ok());
     let kinds: Vec<&str> = events.iter().map(|e| e.kind()).collect();
     assert!(kinds.contains(&"execution_succeeded"));
 }
@@ -313,8 +316,10 @@ fn failed_validation_emits_error() {
     };
     let intent = StageIntent::Settings { patch };
 
-    let result = intent.run(&mut engine);
+    let (events, result) = intent.run(&mut engine);
     assert!(result.is_err());
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind()).collect();
+    assert!(kinds.contains(&"validation_failed"));
 }
 
 #[test]
@@ -328,6 +333,6 @@ fn settings_intent_none_fields_leave_config_unchanged() {
     let intent = StageIntent::Settings { patch };
 
     intent.validate(&engine).unwrap();
-    intent.execute(&mut engine).unwrap();
+    let (_record, _) = intent.execute(&mut engine).unwrap();
     assert_eq!(engine.config().limits, original);
 }

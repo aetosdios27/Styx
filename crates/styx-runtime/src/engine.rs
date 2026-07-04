@@ -42,14 +42,20 @@ impl RuntimeEngine {
             RuntimeCommand::Torrent(id, cmd) => match cmd {
                 TorrentCommand::Pause => StageIntent::Pause { id },
                 TorrentCommand::Resume => StageIntent::Resume { id },
-                other => return self.apply_torrent(id, other),
+                other => {
+                    let events = self.apply_torrent(id, other)?;
+                    for event in events {
+                        self.push_event(event);
+                    }
+                    return Ok(());
+                }
             },
         };
-        let events = intent.run(self)?;
+        let (events, result) = intent.run(self);
         for event in events {
             self.push_event(event);
         }
-        Ok(())
+        result
     }
 
     #[must_use]
@@ -166,7 +172,10 @@ impl RuntimeEngine {
         task.resume_verify().await
     }
 
-    pub fn add_plan_intent(&mut self, plan: TorrentPlan) -> Result<(), RuntimeError> {
+    pub fn add_plan_intent(
+        &mut self,
+        plan: TorrentPlan,
+    ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         if self.tasks.len() >= self.config.limits.max_active_torrents {
             return Err(RuntimeError::Backpressure {
                 stage: "adding torrent",
@@ -174,20 +183,22 @@ impl RuntimeEngine {
         }
         let id = plan.id;
         self.tasks.insert(id, TorrentTask::new(plan));
-        self.push_event(RuntimeEvent::TorrentAdded { torrent: id });
-        Ok(())
+        Ok(vec![RuntimeEvent::TorrentAdded { torrent: id }])
     }
 
     pub fn remove_torrent_intent(
         &mut self,
         id: TorrentId,
-    ) -> Result<Box<TorrentPlan>, RuntimeError> {
+    ) -> Result<(Box<TorrentPlan>, Vec<RuntimeEvent>), RuntimeError> {
         let task = self
             .tasks
             .remove(&id)
             .ok_or(RuntimeError::InvalidConfig("unknown torrent"))?;
-        self.push_event(RuntimeEvent::TorrentRemoved { torrent: id });
-        Ok(Box::new(task.into_plan()))
+        let plan = task.into_plan();
+        Ok((
+            Box::new(plan),
+            vec![RuntimeEvent::TorrentRemoved { torrent: id }],
+        ))
     }
 
     pub fn apply_settings_patch(&mut self, patch: &SettingsPatch) -> Result<(), RuntimeError> {
@@ -223,19 +234,16 @@ impl RuntimeEngine {
         &mut self,
         id: TorrentId,
         command: TorrentCommand,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         let task = self
             .tasks
             .get_mut(&id)
             .ok_or(RuntimeError::InvalidConfig("unknown torrent"))?;
-        let events = task.apply(command)?;
-        for event in events {
-            self.push_event(event);
-        }
+        let mut events = task.apply(command)?;
         if command == TorrentCommand::Cancel {
-            self.push_event(RuntimeEvent::TaskCancelled { torrent: id });
+            events.push(RuntimeEvent::TaskCancelled { torrent: id });
         }
-        Ok(())
+        Ok(events)
     }
 
     fn push_event(&mut self, event: RuntimeEvent) {

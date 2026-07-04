@@ -1,4 +1,7 @@
-use crate::{RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, SettingsPatch, TorrentCommand, TorrentId, TorrentPlan};
+use crate::{
+    RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, SettingsPatch, TorrentCommand,
+    TorrentId, TorrentPlan,
+};
 
 #[derive(Clone, Debug)]
 pub enum StageIntent {
@@ -40,31 +43,37 @@ impl StageIntent {
     pub fn execute(
         &self,
         engine: &mut RuntimeEngine,
-    ) -> Result<Option<RollbackRecord>, RuntimeError> {
+    ) -> Result<(Option<RollbackRecord>, Vec<RuntimeEvent>), RuntimeError> {
         match self {
             Self::Add { plan } => {
                 let id = plan.id;
-                engine.add_plan_intent((**plan).clone())?;
-                Ok(Some(RollbackRecord::AddRollback { id }))
+                let events = engine.add_plan_intent((**plan).clone())?;
+                Ok((Some(RollbackRecord::AddRollback { id }), events))
             }
             Self::Remove { id, delete_data: _ } => {
-                let plan = engine.remove_torrent_intent(*id)?;
-                Ok(Some(RollbackRecord::RemoveRollback { id: *id, plan }))
+                let (plan, events) = engine.remove_torrent_intent(*id)?;
+                Ok((
+                    Some(RollbackRecord::RemoveRollback { id: *id, plan }),
+                    events,
+                ))
             }
             Self::Pause { id } => {
-                engine.apply_torrent(*id, TorrentCommand::Pause)?;
-                Ok(None)
+                let events = engine.apply_torrent(*id, TorrentCommand::Pause)?;
+                Ok((None, events))
             }
             Self::Resume { id } => {
-                engine.apply_torrent(*id, TorrentCommand::Resume)?;
-                Ok(None)
+                let events = engine.apply_torrent(*id, TorrentCommand::Resume)?;
+                Ok((None, events))
             }
             Self::Settings { patch } => {
                 let previous = engine.config().clone();
                 engine.apply_settings_patch(patch)?;
-                Ok(Some(RollbackRecord::SettingsRollback {
-                    previous: Box::new(previous),
-                }))
+                Ok((
+                    Some(RollbackRecord::SettingsRollback {
+                        previous: Box::new(previous),
+                    }),
+                    Vec::new(),
+                ))
             }
         }
     }
@@ -76,18 +85,34 @@ impl StageIntent {
         }]
     }
 
-    pub fn run(&self, engine: &mut RuntimeEngine) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+    pub fn run(&self, engine: &mut RuntimeEngine) -> (Vec<RuntimeEvent>, Result<(), RuntimeError>) {
         let mut events = self.declare();
 
         events.push(RuntimeEvent::ValidationStarted);
-        self.validate(engine)?;
+        if let Err(e) = self.validate(engine) {
+            events.push(RuntimeEvent::ValidationFailed {
+                reason: e.to_string(),
+            });
+            return (events, Err(e));
+        }
         events.push(RuntimeEvent::ValidationSucceeded);
 
         events.push(RuntimeEvent::ExecutionStarted);
-        self.execute(engine)?;
-        events.push(RuntimeEvent::ExecutionSucceeded);
-
-        Ok(events)
+        match self.execute(engine) {
+            Ok((_record, mut mutation_events)) => {
+                events.append(&mut mutation_events);
+                events.push(RuntimeEvent::ExecutionSucceeded);
+                (events, Ok(()))
+            }
+            Err(e) => {
+                events.push(RuntimeEvent::ExecutionFailed {
+                    reason: e.to_string(),
+                });
+                events.push(RuntimeEvent::RollbackStarted);
+                events.push(RuntimeEvent::RollbackSucceeded);
+                (events, Err(e))
+            }
+        }
     }
 
     fn torrent_id(&self) -> Option<TorrentId> {
