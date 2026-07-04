@@ -31,6 +31,11 @@ impl TorrentTask {
     }
 
     #[must_use]
+    pub fn into_plan(self) -> TorrentPlan {
+        self.plan
+    }
+
+    #[must_use]
     pub fn id(&self) -> TorrentId {
         self.plan.id
     }

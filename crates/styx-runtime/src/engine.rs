@@ -4,8 +4,8 @@ use bytes::Bytes;
 use styx_disk::{BlockSpec, PieceIndex, ResumeSummary};
 
 use crate::{
-    RuntimeCommand, RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeSnapshot, TorrentCommand,
-    TorrentId, TorrentPlan, TorrentTask,
+    RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeSnapshot,
+    TorrentCommand, TorrentId, TorrentPlan, TorrentTask,
 };
 
 #[derive(Debug)]
@@ -168,6 +168,46 @@ impl RuntimeEngine {
         self.tasks.insert(id, TorrentTask::new(plan));
         self.push_event(RuntimeEvent::TorrentAdded { torrent: id });
         Ok(())
+    }
+
+    pub fn add_plan_intent(&mut self, plan: TorrentPlan) -> Result<(), RuntimeError> {
+        if self.tasks.len() >= self.config.limits.max_active_torrents {
+            return Err(RuntimeError::Backpressure {
+                stage: "adding torrent",
+            });
+        }
+        let id = plan.id;
+        self.tasks.insert(id, TorrentTask::new(plan));
+        self.push_event(RuntimeEvent::TorrentAdded { torrent: id });
+        Ok(())
+    }
+
+    pub fn remove_torrent_intent(
+        &mut self,
+        id: TorrentId,
+    ) -> Result<Box<TorrentPlan>, RuntimeError> {
+        let task = self
+            .tasks
+            .remove(&id)
+            .ok_or(RuntimeError::InvalidConfig("unknown torrent"))?;
+        self.push_event(RuntimeEvent::TorrentRemoved { torrent: id });
+        Ok(Box::new(task.into_plan()))
+    }
+
+    pub fn rollback(&mut self, record: RollbackRecord) -> Result<(), RuntimeError> {
+        match record {
+            RollbackRecord::AddRollback { id } => {
+                self.tasks.remove(&id);
+                Ok(())
+            }
+            RollbackRecord::RemoveRollback { id, plan } => {
+                self.tasks
+                    .entry(id)
+                    .or_insert_with(|| TorrentTask::new(*plan));
+                Ok(())
+            }
+            RollbackRecord::SettingsRollback { .. } => Ok(()),
+        }
     }
 
     fn apply_torrent(

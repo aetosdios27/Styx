@@ -47,6 +47,9 @@ pub enum RuntimeEvent {
     TorrentAdded {
         torrent: TorrentId,
     },
+    TorrentRemoved {
+        torrent: TorrentId,
+    },
     StateChanged {
         torrent: TorrentId,
         from: TorrentStatus,
@@ -148,6 +151,7 @@ impl RuntimeEvent {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::TorrentAdded { .. } => "torrent_added",
+            Self::TorrentRemoved { .. } => "torrent_removed",
             Self::StateChanged { .. } => "state_changed",
             Self::SourceDiscovered { .. } => "source_discovered",
             Self::SourceFailed { .. } => "source_failed",

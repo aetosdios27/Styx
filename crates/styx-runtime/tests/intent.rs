@@ -5,7 +5,7 @@ use sha1::{Digest, Sha1};
 use styx_proto::{encode, BencodeValue, InfoHashV1};
 use styx_runtime::{
     IntentState, RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError,
-    SettingsPatch, StageIntent, TorrentId, TorrentPlan,
+    SettingsPatch, StageIntent, TorrentCommand, TorrentId, TorrentPlan, TorrentStatus,
 };
 
 fn tid(byte: u8) -> TorrentId {
@@ -116,6 +116,110 @@ fn resume_intent_rejects_unknown_torrent() {
         result,
         Err(RuntimeError::InvalidConfig("unknown torrent"))
     ));
+}
+
+fn engine_with_one_torrent() -> (tempfile::TempDir, RuntimeEngine, TorrentId) {
+    let (tmp, plan) = plan();
+    let id = plan.id;
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    engine
+        .apply(RuntimeCommand::AddPlan(Box::new(plan)))
+        .unwrap();
+    (tmp, engine, id)
+}
+
+#[test]
+fn add_intent_execute_inserts_task() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let (_tmp, plan) = plan();
+    let id = plan.id;
+    let intent = StageIntent::Add {
+        plan: Box::new(plan),
+    };
+
+    let record = intent.execute(&mut engine).unwrap();
+    assert!(engine.has_torrent(id));
+    assert!(matches!(record, Some(RollbackRecord::AddRollback { .. })));
+}
+
+#[test]
+fn add_intent_rollback_removes_task() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let (_tmp, plan) = plan();
+    let id = plan.id;
+    let intent = StageIntent::Add {
+        plan: Box::new(plan),
+    };
+
+    let record = intent.execute(&mut engine).unwrap();
+    assert!(engine.has_torrent(id));
+    engine
+        .rollback(record.expect("Add execute returns AddRollback"))
+        .unwrap();
+    assert!(!engine.has_torrent(id));
+}
+
+#[test]
+fn remove_intent_execute_removes_task() {
+    let (_tmp, mut engine, id) = engine_with_one_torrent();
+    let intent = StageIntent::Remove {
+        id,
+        delete_data: false,
+    };
+
+    let record = intent.execute(&mut engine).unwrap();
+    assert!(!engine.has_torrent(id));
+    assert!(matches!(
+        record,
+        Some(RollbackRecord::RemoveRollback { .. })
+    ));
+}
+
+#[test]
+fn remove_intent_rollback_restores_task() {
+    let (_tmp, mut engine, id) = engine_with_one_torrent();
+    let intent = StageIntent::Remove {
+        id,
+        delete_data: false,
+    };
+
+    let record = intent.execute(&mut engine).unwrap();
+    assert!(!engine.has_torrent(id));
+    engine
+        .rollback(record.expect("Remove execute returns RemoveRollback"))
+        .unwrap();
+    assert!(engine.has_torrent(id));
+}
+
+#[test]
+fn pause_intent_execute_pauses_task() {
+    let (_tmp, mut engine, id) = engine_with_one_torrent();
+    engine
+        .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))
+        .unwrap();
+
+    let intent = StageIntent::Pause { id };
+    let record = intent.execute(&mut engine).unwrap();
+    assert!(record.is_none());
+    let snap = engine.snapshot();
+    assert_eq!(snap.torrents[0].status, TorrentStatus::Paused);
+}
+
+#[test]
+fn resume_intent_execute_resumes_task() {
+    let (_tmp, mut engine, id) = engine_with_one_torrent();
+    engine
+        .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))
+        .unwrap();
+    engine
+        .apply(RuntimeCommand::Torrent(id, TorrentCommand::Pause))
+        .unwrap();
+
+    let intent = StageIntent::Resume { id };
+    let record = intent.execute(&mut engine).unwrap();
+    assert!(record.is_none());
+    let snap = engine.snapshot();
+    assert_eq!(snap.torrents[0].status, TorrentStatus::Downloading);
 }
 
 #[test]

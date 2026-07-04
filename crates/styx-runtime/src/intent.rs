@@ -1,4 +1,7 @@
-use crate::{RuntimeConfig, RuntimeEngine, RuntimeError, SettingsPatch, TorrentId, TorrentPlan};
+use crate::{
+    RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError, SettingsPatch, TorrentCommand,
+    TorrentId, TorrentPlan,
+};
 
 #[derive(Clone, Debug)]
 pub enum StageIntent {
@@ -37,6 +40,32 @@ impl StageIntent {
         IntentState::Declared
     }
 
+    pub fn execute(
+        &self,
+        engine: &mut RuntimeEngine,
+    ) -> Result<Option<RollbackRecord>, RuntimeError> {
+        match self {
+            Self::Add { plan } => {
+                let id = plan.id;
+                engine.add_plan_intent((**plan).clone())?;
+                Ok(Some(RollbackRecord::AddRollback { id }))
+            }
+            Self::Remove { id, delete_data: _ } => {
+                let plan = engine.remove_torrent_intent(*id)?;
+                Ok(Some(RollbackRecord::RemoveRollback { id: *id, plan }))
+            }
+            Self::Pause { id } => {
+                engine.apply(RuntimeCommand::Torrent(*id, TorrentCommand::Pause))?;
+                Ok(None)
+            }
+            Self::Resume { id } => {
+                engine.apply(RuntimeCommand::Torrent(*id, TorrentCommand::Resume))?;
+                Ok(None)
+            }
+            Self::Settings { .. } => Ok(None),
+        }
+    }
+
     pub fn validate(&self, engine: &RuntimeEngine) -> Result<(), RuntimeError> {
         match self {
             Self::Add { plan } => {
@@ -58,7 +87,7 @@ impl StageIntent {
                     }
                 }
                 if let Some(limits) = &patch.limits {
-                    limits.clone().validate()?;
+                    (*limits).validate()?;
                 }
                 Ok(())
             }
