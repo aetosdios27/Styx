@@ -1,0 +1,164 @@
+use crate::TorrentId;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RuntimeSnapshot {
+    pub torrents: Vec<TorrentSnapshot>,
+    pub peers: Vec<PeerSnapshot>,
+    pub events: Vec<RuntimeEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TorrentSnapshot {
+    pub id: TorrentId,
+    pub name: String,
+    pub status: TorrentStatus,
+    pub total_bytes: u64,
+    pub verified_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub down_rate: u64,
+    pub up_rate: u64,
+    pub peers: u32,
+    pub seeds: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PeerSnapshot {
+    pub torrent: TorrentId,
+    pub source: String,
+    pub progress: f32,
+    pub down_rate: u64,
+    pub up_rate: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TorrentStatus {
+    Checking,
+    Discovering,
+    Downloading,
+    Paused,
+    Complete,
+    Seeding,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RuntimeEvent {
+    TorrentAdded {
+        torrent: TorrentId,
+    },
+    StateChanged {
+        torrent: TorrentId,
+        from: TorrentStatus,
+        to: TorrentStatus,
+    },
+    SourceDiscovered {
+        torrent: TorrentId,
+        source: String,
+    },
+    SourceFailed {
+        torrent: TorrentId,
+        source: String,
+        reason: String,
+    },
+    SourceQuarantined {
+        torrent: TorrentId,
+        source: String,
+    },
+    PieceVerified {
+        torrent: TorrentId,
+        piece: u32,
+        bytes: u64,
+    },
+    ProgressUpdated {
+        torrent: TorrentId,
+        verified_bytes: u64,
+        total_bytes: u64,
+    },
+    TaskPaused {
+        torrent: TorrentId,
+    },
+    TaskResumed {
+        torrent: TorrentId,
+    },
+    TaskCancelled {
+        torrent: TorrentId,
+    },
+    TaskFailed {
+        torrent: TorrentId,
+        reason: String,
+    },
+    TaskCompleted {
+        torrent: TorrentId,
+    },
+}
+
+impl RuntimeSnapshot {
+    #[must_use]
+    pub fn torrent_count(&self) -> usize {
+        self.torrents.len()
+    }
+
+    #[must_use]
+    pub fn peer_count(&self) -> usize {
+        self.peers.len()
+    }
+}
+
+impl TorrentSnapshot {
+    #[must_use]
+    pub fn new(id: TorrentId, name: impl Into<String>, total_bytes: u64) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            status: TorrentStatus::Checking,
+            total_bytes,
+            verified_bytes: 0,
+            downloaded_bytes: 0,
+            down_rate: 0,
+            up_rate: 0,
+            peers: 0,
+            seeds: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn with_verified_bytes(mut self, bytes: u64) -> Self {
+        self.verified_bytes = bytes.min(self.total_bytes);
+        self
+    }
+
+    #[must_use]
+    pub fn with_downloaded_bytes(mut self, bytes: u64) -> Self {
+        self.downloaded_bytes = bytes;
+        self
+    }
+
+    #[must_use]
+    pub fn progress(&self) -> f32 {
+        if self.total_bytes == 0 {
+            return 1.0;
+        }
+        self.verified_bytes as f32 / self.total_bytes as f32
+    }
+}
+
+impl RuntimeEvent {
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::TorrentAdded { .. } => "torrent_added",
+            Self::StateChanged { .. } => "state_changed",
+            Self::SourceDiscovered { .. } => "source_discovered",
+            Self::SourceFailed { .. } => "source_failed",
+            Self::SourceQuarantined { .. } => "source_quarantined",
+            Self::PieceVerified { .. } => "piece_verified",
+            Self::ProgressUpdated { .. } => "progress_updated",
+            Self::TaskPaused { .. } => "task_paused",
+            Self::TaskResumed { .. } => "task_resumed",
+            Self::TaskCancelled { .. } => "task_cancelled",
+            Self::TaskFailed { .. } => "task_failed",
+            Self::TaskCompleted { .. } => "task_completed",
+        }
+    }
+}

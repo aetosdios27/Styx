@@ -8,6 +8,21 @@ use url::Url;
 use crate::{RuntimeError, SmokeConfig, SmokeTarget};
 
 #[derive(Clone, Debug)]
+pub struct TorrentPlan {
+    pub metainfo: TorrentMetainfo,
+    pub id: TorrentId,
+    pub info_hash: InfoHashV1,
+    pub name: String,
+    pub total_size: u64,
+    pub announce_urls: Vec<Url>,
+    pub web_seed_urls: Vec<Url>,
+    pub disk_plan: DiskPlan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TorrentId(InfoHashV1);
+
+#[derive(Clone, Debug)]
 pub struct TorrentSmokePlan {
     pub metainfo: TorrentMetainfo,
     pub info_hash: InfoHashV1,
@@ -19,35 +34,100 @@ pub struct TorrentSmokePlan {
     pub disk_plan: DiskPlan,
 }
 
+impl TorrentPlan {
+    pub fn from_file(
+        torrent_path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+    ) -> Result<Self, RuntimeError> {
+        let bytes = fs::read(torrent_path)?;
+        let metainfo = decode_torrent(&bytes)?;
+        Self::from_metainfo(metainfo, destination)
+    }
+
+    pub fn from_metainfo(
+        metainfo: TorrentMetainfo,
+        destination: impl AsRef<Path>,
+    ) -> Result<Self, RuntimeError> {
+        let total_size = torrent_size(&metainfo);
+        let announce_urls = http_announce_urls(&metainfo)?;
+        let web_seed_urls = web_seed_urls(&metainfo)?;
+        if announce_urls.is_empty() && web_seed_urls.is_empty() {
+            return Err(RuntimeError::NoHttpTracker);
+        }
+        let disk_plan = DiskPlan::from_metainfo(&metainfo, destination)?;
+        let info_hash = metainfo.info_hash_v1;
+        Ok(Self {
+            id: TorrentId::new(info_hash),
+            info_hash,
+            name: String::from_utf8_lossy(&metainfo.info.name).into_owned(),
+            metainfo,
+            total_size,
+            announce_urls,
+            web_seed_urls,
+            disk_plan,
+        })
+    }
+
+    #[must_use]
+    pub fn piece_count(&self) -> u32 {
+        self.disk_plan.piece_count()
+    }
+
+    pub fn piece_length(&self, piece: PieceIndex) -> Result<u32, RuntimeError> {
+        Ok(self.disk_plan.piece_length(piece)?)
+    }
+}
+
+impl TorrentId {
+    #[must_use]
+    pub const fn new(info_hash: InfoHashV1) -> Self {
+        Self(info_hash)
+    }
+
+    #[must_use]
+    pub const fn info_hash(self) -> InfoHashV1 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 20] {
+        self.0.as_bytes()
+    }
+}
+
+impl Ord for TorrentId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_bytes().cmp(other.as_bytes())
+    }
+}
+
+impl PartialOrd for TorrentId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 pub fn load_torrent_plan(
     torrent_path: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     config: &SmokeConfig,
 ) -> Result<TorrentSmokePlan, RuntimeError> {
     config.validate()?;
-    let bytes = fs::read(torrent_path)?;
-    let metainfo = decode_torrent(&bytes)?;
-    let total_size = torrent_size(&metainfo);
-    let announce_urls = http_announce_urls(&metainfo)?;
-    let web_seed_urls = web_seed_urls(&metainfo)?;
-    if announce_urls.is_empty() && web_seed_urls.is_empty() {
-        return Err(RuntimeError::NoHttpTracker);
-    }
-    let disk_plan = DiskPlan::from_metainfo(&metainfo, destination)?;
+    let plan = TorrentPlan::from_file(torrent_path, destination)?;
     let target_piece = match config.target {
         SmokeTarget::FirstPiece => PieceIndex::new(0),
     };
-    disk_plan.piece_length(target_piece)?;
+    plan.disk_plan.piece_length(target_piece)?;
 
     Ok(TorrentSmokePlan {
-        info_hash: metainfo.info_hash_v1,
-        metainfo,
-        total_size,
-        left: total_size,
-        announce_urls,
-        web_seed_urls,
+        info_hash: plan.info_hash,
+        metainfo: plan.metainfo,
+        total_size: plan.total_size,
+        left: plan.total_size,
+        announce_urls: plan.announce_urls,
+        web_seed_urls: plan.web_seed_urls,
         target_piece,
-        disk_plan,
+        disk_plan: plan.disk_plan,
     })
 }
 

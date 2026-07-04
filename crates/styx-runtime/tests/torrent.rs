@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
+use styx_disk::PieceIndex;
 use styx_proto::{encode, BencodeValue};
-use styx_runtime::{load_torrent_plan, RuntimeError, SmokeConfig};
+use styx_runtime::{load_torrent_plan, RuntimeError, SmokeConfig, TorrentPlan};
 
 #[test]
 fn load_torrent_plan_selects_first_piece_and_total_left() {
@@ -82,6 +83,34 @@ fn load_torrent_plan_accepts_url_list_web_seed_without_tracker() {
 
     assert!(plan.announce_urls.is_empty());
     assert_eq!(plan.web_seed_urls[0].as_str(), "https://mirror.test/iso/");
+}
+
+#[test]
+fn torrent_plan_exposes_piece_count_piece_lengths_and_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    std::fs::write(&torrent, torrent_with_url_list()).unwrap();
+
+    let plan = TorrentPlan::from_file(&torrent, temp.path().join("downloads")).unwrap();
+
+    assert_eq!(plan.name, "file.bin");
+    assert_eq!(plan.total_size, 8);
+    assert_eq!(plan.piece_count(), 2);
+    assert_eq!(plan.piece_length(PieceIndex::new(0)).unwrap(), 4);
+    assert_eq!(plan.piece_length(PieceIndex::new(1)).unwrap(), 4);
+    assert!(plan.announce_urls.is_empty());
+    assert_eq!(plan.web_seed_urls[0].as_str(), "https://mirror.test/iso/");
+}
+
+#[test]
+fn torrent_plan_rejects_torrents_without_any_http_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    std::fs::write(&torrent, single_file_torrent(Some("udp://tracker.test:80"))).unwrap();
+
+    let err = TorrentPlan::from_file(&torrent, temp.path().join("downloads")).unwrap_err();
+
+    assert_eq!(err, RuntimeError::NoHttpTracker);
 }
 
 fn single_file_torrent(announce: Option<&str>) -> Vec<u8> {

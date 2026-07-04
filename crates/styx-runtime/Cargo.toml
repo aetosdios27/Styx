@@ -8,6 +8,7 @@ bytes = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 sha1 = { workspace = true }
+styx-core = { path = "../styx-core" }
 styx-disk = { path = "../styx-disk" }
 styx-proto = { path = "../styx-proto" }
 styx-tracker = { path = "../styx-tracker" }

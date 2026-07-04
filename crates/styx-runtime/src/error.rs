@@ -4,6 +4,22 @@ use styx_disk::DiskError;
 use styx_proto::{PeerWireError, TorrentMetainfoError};
 use styx_tracker::TrackerError;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FailureScope {
+    SourceLocal,
+    TorrentGlobal,
+    RuntimeGlobal,
+    IntentStage,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetryClass {
+    Retryable,
+    Quarantine,
+    Terminal,
+    Rollbackable,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("invalid runtime config: {0}")]
@@ -32,6 +48,17 @@ pub enum RuntimeError {
     },
     #[error("timed out while {stage}")]
     Timeout { stage: &'static str },
+    #[error("{scope:?} source `{source_id}` failed ({retry:?}): {reason}")]
+    SourceFailed {
+        source_id: String,
+        scope: FailureScope,
+        retry: RetryClass,
+        reason: String,
+    },
+    #[error("runtime backpressure while {stage}")]
+    Backpressure { stage: &'static str },
+    #[error("runtime task was cancelled")]
+    Cancelled,
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -44,6 +71,58 @@ pub enum RuntimeError {
     Disk(#[from] DiskError),
     #[error(transparent)]
     Http(#[from] reqwest::Error),
+}
+
+impl RuntimeError {
+    #[must_use]
+    pub const fn scope(&self) -> FailureScope {
+        match self {
+            Self::SourceFailed { scope, .. } => *scope,
+            Self::Backpressure { .. } | Self::Cancelled | Self::InvalidConfig(_) => {
+                FailureScope::RuntimeGlobal
+            }
+            Self::NoHttpTracker
+            | Self::NoPeers
+            | Self::AllPeersFailed { .. }
+            | Self::UnsupportedWebSeedLayout
+            | Self::PieceHashMismatch { .. }
+            | Self::InvalidWebSeedLength { .. } => FailureScope::TorrentGlobal,
+            Self::InvalidTrackerUrl { .. }
+            | Self::PeerChoked
+            | Self::UnexpectedPeerMessage { .. }
+            | Self::Timeout { .. }
+            | Self::Io(_)
+            | Self::Torrent(_)
+            | Self::Tracker(_)
+            | Self::PeerWire(_)
+            | Self::Disk(_)
+            | Self::Http(_) => FailureScope::SourceLocal,
+        }
+    }
+
+    #[must_use]
+    pub const fn retry_class(&self) -> RetryClass {
+        match self {
+            Self::SourceFailed { retry, .. } => *retry,
+            Self::Timeout { .. } | Self::PeerChoked | Self::NoPeers => RetryClass::Retryable,
+            Self::PieceHashMismatch { .. }
+            | Self::UnexpectedPeerMessage { .. }
+            | Self::InvalidWebSeedLength { .. } => RetryClass::Quarantine,
+            Self::Backpressure { .. } => RetryClass::Retryable,
+            Self::AllPeersFailed { .. }
+            | Self::NoHttpTracker
+            | Self::UnsupportedWebSeedLayout
+            | Self::InvalidConfig(_)
+            | Self::InvalidTrackerUrl { .. }
+            | Self::Cancelled
+            | Self::Io(_)
+            | Self::Torrent(_)
+            | Self::Tracker(_)
+            | Self::PeerWire(_)
+            | Self::Disk(_)
+            | Self::Http(_) => RetryClass::Terminal,
+        }
+    }
 }
 
 impl PartialEq for RuntimeError {
@@ -104,5 +183,30 @@ impl PartialEq for RuntimeError {
                     (self, other),
                     (Self::Timeout { stage: left }, Self::Timeout { stage: right }) if left == right
             )
+            || matches!(
+                (self, other),
+                (
+                    Self::SourceFailed {
+                        source_id: left_source,
+                        scope: left_scope,
+                        retry: left_retry,
+                        reason: left_reason,
+                    },
+                    Self::SourceFailed {
+                        source_id: right_source,
+                        scope: right_scope,
+                        retry: right_retry,
+                        reason: right_reason,
+                    },
+                ) if left_source == right_source
+                    && left_scope == right_scope
+                    && left_retry == right_retry
+                    && left_reason == right_reason
+            )
+            || matches!(
+                (self, other),
+                (Self::Backpressure { stage: left }, Self::Backpressure { stage: right }) if left == right
+            )
+            || matches!((self, other), (Self::Cancelled, Self::Cancelled))
     }
 }
