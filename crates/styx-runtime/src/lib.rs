@@ -1,5 +1,6 @@
 //! Runtime orchestration for real-world Styx smoke tests.
 
+mod app;
 mod config;
 mod control;
 mod download;
@@ -19,6 +20,7 @@ mod tracker;
 mod types;
 mod web_seed;
 
+pub use app::AppRuntime;
 pub use config::{RuntimeConfig, RuntimeLimits};
 pub use control::{RuntimeCommand, TorrentCommand};
 pub use download::run_full_v1_download;

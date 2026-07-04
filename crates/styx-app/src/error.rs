@@ -24,6 +24,12 @@ pub enum AppError {
         #[source]
         source: styx_proto::TorrentMetainfoError,
     },
+    #[error("invalid command: {0}")]
+    InvalidCommand(String),
+    #[error("runtime backpressure")]
+    Backpressure,
+    #[error("internal error: {0}")]
+    Internal(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
