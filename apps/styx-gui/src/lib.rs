@@ -9,7 +9,7 @@ use anyhow::Result;
 
 pub fn run() -> Result<()> {
     tauri::Builder::<tauri::Wry>::default()
-        .manage(state::GuiState::default())
+        .manage(state::GuiState::new(6881)?)
         .invoke_handler(tauri::generate_handler![
             tauri_commands::get_snapshot,
             tauri_commands::add_torrent,

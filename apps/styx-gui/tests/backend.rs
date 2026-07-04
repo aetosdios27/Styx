@@ -26,7 +26,7 @@ fn fixture(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn get_snapshot_returns_empty_runtime_state() {
-    let state = GuiState::default();
+    let state = GuiState::new(6882).unwrap();
 
     let snapshot = get_snapshot(&state).await.unwrap();
 
@@ -35,9 +35,9 @@ async fn get_snapshot_returns_empty_runtime_state() {
 
 #[tokio::test]
 async fn add_torrent_uses_shared_runtime_contract() {
-    let state = GuiState::default();
+    let state = GuiState::new(6882).unwrap();
 
-    let response = add_torrent(&state, fixture("single_file.torrent"), None)
+    let response = add_torrent(&state, fixture("single_file.torrent"), Some(std::env::temp_dir().join("styx-gui-dl")))
         .await
         .unwrap();
 
@@ -49,9 +49,9 @@ async fn add_torrent_uses_shared_runtime_contract() {
 
 #[tokio::test]
 async fn pause_and_resume_update_snapshot_status() {
-    let state = GuiState::default();
+    let state = GuiState::new(6882).unwrap();
     let CommandResponse::TorrentAdded { info_hash, .. } =
-        add_torrent(&state, fixture("single_file.torrent"), None)
+        add_torrent(&state, fixture("single_file.torrent"), Some(std::env::temp_dir().join("styx-gui-dl")))
             .await
             .unwrap()
     else {
@@ -67,6 +67,6 @@ async fn pause_and_resume_update_snapshot_status() {
     resume_torrent(&state, info_hash).await.unwrap();
     assert_eq!(
         get_snapshot(&state).await.unwrap().torrents[0].status,
-        TorrentStatus::Checking
+        TorrentStatus::Downloading
     );
 }
