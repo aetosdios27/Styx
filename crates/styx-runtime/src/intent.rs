@@ -1,6 +1,6 @@
 use crate::{
-    RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError, SettingsPatch, TorrentCommand,
-    TorrentId, TorrentPlan,
+    RuntimeConfig, RuntimeEngine, RuntimeError, SettingsPatch, TorrentCommand, TorrentId,
+    TorrentPlan,
 };
 
 #[derive(Clone, Debug)]
@@ -55,11 +55,11 @@ impl StageIntent {
                 Ok(Some(RollbackRecord::RemoveRollback { id: *id, plan }))
             }
             Self::Pause { id } => {
-                engine.apply(RuntimeCommand::Torrent(*id, TorrentCommand::Pause))?;
+                engine.apply_torrent(*id, TorrentCommand::Pause)?;
                 Ok(None)
             }
             Self::Resume { id } => {
-                engine.apply(RuntimeCommand::Torrent(*id, TorrentCommand::Resume))?;
+                engine.apply_torrent(*id, TorrentCommand::Resume)?;
                 Ok(None)
             }
             Self::Settings { patch } => {

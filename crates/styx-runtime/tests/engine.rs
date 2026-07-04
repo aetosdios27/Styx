@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use styx_disk::{BlockLength, BlockOffset, BlockSpec, PieceIndex};
-use styx_proto::{encode, BencodeValue};
+use styx_proto::{encode, BencodeValue, InfoHashV1};
 use styx_runtime::{
     RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, TorrentCommand,
-    TorrentStatus,
+    TorrentId, TorrentStatus,
 };
 
 #[test]
@@ -150,6 +150,64 @@ async fn runtime_engine_verifies_later_piece_through_orchestration_path() {
         .drain_events()
         .iter()
         .any(|event| matches!(event, RuntimeEvent::PieceVerified { piece: 1, .. })));
+}
+
+#[test]
+fn apply_add_plan_routes_through_intent_pipeline() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    std::fs::write(&torrent, torrent_bytes()).unwrap();
+    let plan =
+        styx_runtime::TorrentPlan::from_file(&torrent, temp.path().join("downloads")).unwrap();
+    let id = plan.id;
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+
+    engine
+        .apply(RuntimeCommand::AddPlan(Box::new(plan)))
+        .unwrap();
+    assert!(engine.has_torrent(id));
+}
+
+#[test]
+fn apply_add_duplicate_plan_fails_validation() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    std::fs::write(&torrent, torrent_bytes()).unwrap();
+    let plan =
+        styx_runtime::TorrentPlan::from_file(&torrent, temp.path().join("downloads")).unwrap();
+    let duplicate = plan.clone();
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+
+    engine
+        .apply(RuntimeCommand::AddPlan(Box::new(plan)))
+        .unwrap();
+    let result = engine.apply(RuntimeCommand::AddPlan(Box::new(duplicate)));
+    assert!(result.is_err());
+}
+
+#[test]
+fn apply_remove_routes_through_intent_pipeline() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    std::fs::write(&torrent, torrent_bytes()).unwrap();
+    let plan =
+        styx_runtime::TorrentPlan::from_file(&torrent, temp.path().join("downloads")).unwrap();
+    let id = plan.id;
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    engine
+        .apply(RuntimeCommand::AddPlan(Box::new(plan)))
+        .unwrap();
+
+    engine.apply(RuntimeCommand::Remove(id)).unwrap();
+    assert!(!engine.has_torrent(id));
+}
+
+#[test]
+fn apply_remove_unknown_returns_error() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let id = TorrentId::new(InfoHashV1::new([0u8; 20]));
+    let result = engine.apply(RuntimeCommand::Remove(id));
+    assert!(result.is_err());
 }
 
 fn torrent_bytes() -> Vec<u8> {

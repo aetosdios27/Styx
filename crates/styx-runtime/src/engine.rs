@@ -5,7 +5,7 @@ use styx_disk::{BlockSpec, PieceIndex, ResumeSummary};
 
 use crate::{
     RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeSnapshot,
-    SettingsPatch, TorrentCommand, TorrentId, TorrentPlan, TorrentTask,
+    SettingsPatch, StageIntent, TorrentCommand, TorrentId, TorrentPlan, TorrentTask,
 };
 
 #[derive(Debug)]
@@ -33,16 +33,20 @@ impl RuntimeEngine {
     }
 
     pub fn apply(&mut self, command: RuntimeCommand) -> Result<(), RuntimeError> {
-        match command {
-            RuntimeCommand::AddPlan(plan) => self.add_plan(*plan),
-            RuntimeCommand::Torrent(id, command) => self.apply_torrent(id, command),
-            RuntimeCommand::Remove(id) => {
-                self.tasks
-                    .remove(&id)
-                    .ok_or(RuntimeError::InvalidConfig("unknown torrent"))?;
-                Ok(())
-            }
-        }
+        let intent = match command {
+            RuntimeCommand::AddPlan(plan) => StageIntent::Add { plan },
+            RuntimeCommand::Remove(id) => StageIntent::Remove {
+                id,
+                delete_data: false,
+            },
+            RuntimeCommand::Torrent(id, cmd) => match cmd {
+                TorrentCommand::Pause => StageIntent::Pause { id },
+                TorrentCommand::Resume => StageIntent::Resume { id },
+                other => return self.apply_torrent(id, other),
+            },
+        };
+        intent.validate(self)?;
+        intent.execute(self).map(|_| ())
     }
 
     #[must_use]
@@ -159,21 +163,6 @@ impl RuntimeEngine {
         task.resume_verify().await
     }
 
-    fn add_plan(&mut self, plan: TorrentPlan) -> Result<(), RuntimeError> {
-        if self.tasks.len() >= self.config.limits.max_active_torrents {
-            return Err(RuntimeError::Backpressure {
-                stage: "adding torrent",
-            });
-        }
-        let id = plan.id;
-        if self.tasks.contains_key(&id) {
-            return Err(RuntimeError::InvalidConfig("torrent already exists"));
-        }
-        self.tasks.insert(id, TorrentTask::new(plan));
-        self.push_event(RuntimeEvent::TorrentAdded { torrent: id });
-        Ok(())
-    }
-
     pub fn add_plan_intent(&mut self, plan: TorrentPlan) -> Result<(), RuntimeError> {
         if self.tasks.len() >= self.config.limits.max_active_torrents {
             return Err(RuntimeError::Backpressure {
@@ -227,7 +216,7 @@ impl RuntimeEngine {
         }
     }
 
-    fn apply_torrent(
+    pub(crate) fn apply_torrent(
         &mut self,
         id: TorrentId,
         command: TorrentCommand,
