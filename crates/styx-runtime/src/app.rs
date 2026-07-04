@@ -51,8 +51,8 @@ impl AppRuntime {
         source: std::path::PathBuf,
         destination: Option<std::path::PathBuf>,
     ) -> Result<CommandResponse, AppError> {
-        let dest = destination
-            .ok_or_else(|| AppError::InvalidCommand("destination required".into()))?;
+        let dest =
+            destination.ok_or_else(|| AppError::InvalidCommand("destination required".into()))?;
         let plan = TorrentPlan::from_file(&source, &dest).map_err(|e| match e {
             RuntimeError::Io(io_err) => AppError::ReadTorrent {
                 path: source.clone(),
@@ -80,7 +80,10 @@ impl AppRuntime {
 impl TorrentRuntime for AppRuntime {
     fn apply(&mut self, command: ControlCommand) -> Result<CommandResponse, AppError> {
         match command {
-            ControlCommand::Add { source, destination } => self.apply_add(source, destination),
+            ControlCommand::Add {
+                source,
+                destination,
+            } => self.apply_add(source, destination),
             ControlCommand::Remove { info_hash } => {
                 let id = torrent_id_from_hex(info_hash)?;
                 self.engine
@@ -121,8 +124,8 @@ impl TorrentRuntime for AppRuntime {
         let totals = SessionTotals {
             torrent_count: torrents.len() as u32,
             peer_count: snap.peers.len() as u32,
-            down_bytes: torrents.iter().map(|t| t.down_rate as u64).sum(),
-            up_bytes: torrents.iter().map(|t| t.up_rate as u64).sum(),
+            down_bytes: torrents.iter().map(|t| t.down_rate).sum(),
+            up_bytes: torrents.iter().map(|t| t.up_rate).sum(),
         };
         AppSnapshot {
             torrents,

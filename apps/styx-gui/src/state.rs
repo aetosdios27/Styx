@@ -14,8 +14,7 @@ impl GuiState {
             listen_port,
             ..RuntimeConfig::default()
         };
-        let engine =
-            RuntimeEngine::new(config).map_err(|e| AppError::Internal(e.to_string()))?;
+        let engine = RuntimeEngine::new(config).map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(Self {
             runtime: Mutex::new(AppRuntime::new(engine)),
         })

@@ -61,9 +61,7 @@ fn apply_remove_removes_torrent() {
 
     assert_eq!(runtime.snapshot().totals.torrent_count, 1);
 
-    runtime
-        .apply(ControlCommand::Remove { info_hash })
-        .unwrap();
+    runtime.apply(ControlCommand::Remove { info_hash }).unwrap();
     assert_eq!(runtime.snapshot().totals.torrent_count, 0);
 }
 
@@ -144,17 +142,13 @@ fn apply_pause_and_resume_routes_through_engine() {
         })
         .unwrap();
 
-    runtime
-        .apply(ControlCommand::Pause { info_hash })
-        .unwrap();
+    runtime.apply(ControlCommand::Pause { info_hash }).unwrap();
     assert_eq!(
         runtime.snapshot().torrents[0].status,
         styx_app::TorrentStatus::Paused
     );
 
-    runtime
-        .apply(ControlCommand::Resume { info_hash })
-        .unwrap();
+    runtime.apply(ControlCommand::Resume { info_hash }).unwrap();
     assert_eq!(
         runtime.snapshot().torrents[0].status,
         styx_app::TorrentStatus::Downloading
@@ -211,7 +205,10 @@ fn tick_accumulates_logs_from_state_changed_events() {
 
     runtime.tick();
     let snap = runtime.snapshot();
-    assert!(!snap.logs.is_empty(), "tick should produce logs from events");
+    assert!(
+        !snap.logs.is_empty(),
+        "tick should produce logs from events"
+    );
     assert!(snap.logs.iter().any(|l| l.message.contains("added")));
 }
 
@@ -244,9 +241,7 @@ fn tick_logs_accumulate_across_multiple_ticks() {
         "add + auto-start produce at least one log entry"
     );
 
-    runtime
-        .apply(ControlCommand::Remove { info_hash })
-        .unwrap();
+    runtime.apply(ControlCommand::Remove { info_hash }).unwrap();
     runtime.tick();
     assert!(
         runtime.snapshot().logs.len() > first_logs,

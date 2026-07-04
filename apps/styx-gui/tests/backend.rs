@@ -37,9 +37,13 @@ async fn get_snapshot_returns_empty_runtime_state() {
 async fn add_torrent_uses_shared_runtime_contract() {
     let state = GuiState::new(6882).unwrap();
 
-    let response = add_torrent(&state, fixture("single_file.torrent"), Some(std::env::temp_dir().join("styx-gui-dl")))
-        .await
-        .unwrap();
+    let response = add_torrent(
+        &state,
+        fixture("single_file.torrent"),
+        Some(std::env::temp_dir().join("styx-gui-dl")),
+    )
+    .await
+    .unwrap();
 
     let CommandResponse::TorrentAdded { name, .. } = response else {
         panic!("expected torrent_added response");
@@ -50,11 +54,13 @@ async fn add_torrent_uses_shared_runtime_contract() {
 #[tokio::test]
 async fn pause_and_resume_update_snapshot_status() {
     let state = GuiState::new(6882).unwrap();
-    let CommandResponse::TorrentAdded { info_hash, .. } =
-        add_torrent(&state, fixture("single_file.torrent"), Some(std::env::temp_dir().join("styx-gui-dl")))
-            .await
-            .unwrap()
-    else {
+    let CommandResponse::TorrentAdded { info_hash, .. } = add_torrent(
+        &state,
+        fixture("single_file.torrent"),
+        Some(std::env::temp_dir().join("styx-gui-dl")),
+    )
+    .await
+    .unwrap() else {
         panic!("expected torrent_added response");
     };
 
