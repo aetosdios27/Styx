@@ -410,6 +410,7 @@ mod tests {
         let meta = TorrentMetainfo {
             announce: None,
             announce_list: Vec::new(),
+            url_list: Vec::new(),
             info: TorrentInfo {
                 name: Bytes::from_static(b"file.bin"),
                 piece_length,

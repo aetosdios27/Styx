@@ -9,14 +9,16 @@ pub mod tui;
 use std::{io::Write, str::FromStr};
 
 use anyhow::Result;
+use serde_json::json;
 
 use crate::{
     args::{Cli, Command},
+    error::CliError,
     headless::{run_default_headless, HeadlessOptions},
     ipc::send_unix_command,
 };
 use styx_app::{
-    AppError, CommandResponseEnvelope, ControlCommand, InfoHashHex, MemoryRuntime, TorrentRuntime,
+    CommandResponseEnvelope, ControlCommand, InfoHashHex, MemoryRuntime, TorrentRuntime,
 };
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -35,6 +37,34 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 
     if let Some(command) = cli.command.as_ref() {
+        if let Command::Smoke {
+            torrent,
+            dest,
+            listen_port,
+        } = command
+        {
+            if cli.ipc.is_some() {
+                return Err(CliError::UnsupportedMemoryCommand.into());
+            }
+            let mut config =
+                styx_runtime::SmokeRunConfig::default_for_paths(torrent.clone(), dest.clone());
+            config.listen_port = *listen_port;
+            let outcome = styx_runtime::run_one_piece_smoke(config).await?;
+            serde_json::to_writer(
+                std::io::stdout(),
+                &json!({
+                    "ok": true,
+                    "response": {
+                        "type": "smoke_verified",
+                        "piece": outcome.piece(),
+                        "bytes": outcome.bytes()
+                    }
+                }),
+            )?;
+            println!();
+            return Ok(());
+        }
+
         if let Some(path) = &cli.ipc {
             let command = control_command(command)?;
             let response = send_unix_command(path, &command).await?;
@@ -50,7 +80,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-pub fn run_command_once(cli: Cli, mut writer: impl Write) -> Result<(), AppError> {
+pub fn run_command_once(cli: Cli, mut writer: impl Write) -> Result<(), CliError> {
     let Some(command) = cli.command.as_ref() else {
         let response = CommandResponseEnvelope::ok(styx_app::CommandResponse::Status {
             snapshot: MemoryRuntime::default().snapshot(),
@@ -71,7 +101,7 @@ pub fn run_command_once(cli: Cli, mut writer: impl Write) -> Result<(), AppError
     Ok(())
 }
 
-fn control_command(command: &Command) -> Result<ControlCommand, AppError> {
+fn control_command(command: &Command) -> Result<ControlCommand, CliError> {
     Ok(match command {
         Command::Add {
             source,
@@ -90,5 +120,6 @@ fn control_command(command: &Command) -> Result<ControlCommand, AppError> {
             info_hash: InfoHashHex::from_str(info_hash)?,
         },
         Command::Status => ControlCommand::Status,
+        Command::Smoke { .. } => return Err(CliError::UnsupportedMemoryCommand),
     })
 }

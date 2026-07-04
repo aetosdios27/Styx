@@ -274,6 +274,7 @@ mod tests {
         let meta = TorrentMetainfo {
             announce: None,
             announce_list: Vec::new(),
+            url_list: Vec::new(),
             info,
             info_hash_v1: InfoHashV1::new([0; 20]),
             raw_info: Bytes::new(),

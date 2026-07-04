@@ -5,6 +5,7 @@ members = [
     "crates/styx-core",
     "crates/styx-dht",
     "crates/styx-utp",
+    "crates/styx-runtime",
     "crates/styx-ml",
     "crates/styx-disk",
     "crates/styx-tracker",

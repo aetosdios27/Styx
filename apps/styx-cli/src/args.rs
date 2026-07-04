@@ -46,4 +46,13 @@ pub enum Command {
     },
     #[command(about = "Print the current runtime snapshot")]
     Status,
+    #[command(about = "Run a real-torrent smoke test that verifies one v1 piece")]
+    Smoke {
+        #[arg(long, value_name = "TORRENT")]
+        torrent: PathBuf,
+        #[arg(long, value_name = "DIR")]
+        dest: PathBuf,
+        #[arg(long, default_value_t = 6881, value_name = "PORT")]
+        listen_port: u16,
+    },
 }

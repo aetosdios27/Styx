@@ -35,6 +35,8 @@ pub struct TorrentMetainfo {
     pub announce: Option<Bytes>,
     /// BEP 12 announce tiers.
     pub announce_list: Vec<Vec<Bytes>>,
+    /// BEP 19 web seed URLs from `url-list`.
+    pub url_list: Vec<Bytes>,
     /// Parsed `info` dictionary.
     pub info: TorrentInfo,
     /// SHA-1 hash of the exact bencoded `info` dictionary bytes.
@@ -151,6 +153,7 @@ pub fn decode_torrent(input: &[u8]) -> Result<TorrentMetainfo, TorrentMetainfoEr
 
     let announce = optional_bytes(&entries, b"announce", "metainfo")?;
     let announce_list = optional_announce_list(&entries)?;
+    let url_list = optional_url_list(&entries)?;
     let info = parse_info(&info_entry.value)?;
     let raw_info = raw_slice(input, info_entry.value_span.clone());
     let info_hash_v1 = sha1_digest(&raw_info);
@@ -158,10 +161,56 @@ pub fn decode_torrent(input: &[u8]) -> Result<TorrentMetainfo, TorrentMetainfoEr
     Ok(TorrentMetainfo {
         announce,
         announce_list,
+        url_list,
         info,
         info_hash_v1,
         raw_info,
     })
+}
+
+fn optional_url_list(
+    entries: &[crate::bencode::SpannedDictEntry],
+) -> Result<Vec<Bytes>, TorrentMetainfoError> {
+    let Some(value) = top_level_value(entries, b"url-list") else {
+        return Ok(Vec::new());
+    };
+    match value {
+        BencodeValue::Bytes(bytes) => {
+            if bytes.is_empty() {
+                return Err(TorrentMetainfoError::EmptyBytes {
+                    field: "url-list",
+                    context: "metainfo",
+                });
+            }
+            Ok(vec![bytes.clone()])
+        }
+        BencodeValue::List(values) => {
+            if values.is_empty() {
+                return Err(TorrentMetainfoError::EmptyList {
+                    field: "url-list",
+                    context: "metainfo",
+                });
+            }
+            values
+                .iter()
+                .map(|value| match value {
+                    BencodeValue::Bytes(bytes) if !bytes.is_empty() => Ok(bytes.clone()),
+                    BencodeValue::Bytes(_) => Err(TorrentMetainfoError::EmptyBytes {
+                        field: "url-list",
+                        context: "metainfo",
+                    }),
+                    _ => Err(TorrentMetainfoError::WrongType {
+                        field: "url-list",
+                        context: "metainfo",
+                    }),
+                })
+                .collect()
+        }
+        _ => Err(TorrentMetainfoError::WrongType {
+            field: "url-list",
+            context: "metainfo",
+        }),
+    }
 }
 
 fn parse_info(value: &BencodeValue) -> Result<TorrentInfo, TorrentMetainfoError> {

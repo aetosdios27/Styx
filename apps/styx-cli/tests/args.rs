@@ -44,3 +44,26 @@ fn cli_parses_ipc_status_command() {
     assert_eq!(cli.ipc, Some(PathBuf::from("/tmp/styx.sock")));
     assert_eq!(cli.command, Some(Command::Status));
 }
+
+#[test]
+fn cli_parses_smoke_command() {
+    let cli = Cli::parse_from([
+        "styx-cli",
+        "smoke",
+        "--torrent",
+        "ubuntu.torrent",
+        "--dest",
+        "/tmp/styx-smoke",
+        "--listen-port",
+        "6999",
+    ]);
+
+    assert_eq!(
+        cli.command,
+        Some(Command::Smoke {
+            torrent: PathBuf::from("ubuntu.torrent"),
+            dest: PathBuf::from("/tmp/styx-smoke"),
+            listen_port: 6999,
+        })
+    );
+}

@@ -12,6 +12,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 styx-app = { path = "../../crates/styx-app" }
 styx-proto = { path = "../../crates/styx-proto" }
+styx-runtime = { path = "../../crates/styx-runtime" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

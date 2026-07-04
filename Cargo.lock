@@ -4009,6 +4009,7 @@ dependencies = [
  "serde_json",
  "styx-app",
  "styx-proto",
+ "styx-runtime",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4085,6 +4086,23 @@ dependencies = [
  "sha1",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "styx-runtime"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "sha1",
+ "styx-disk",
+ "styx-proto",
+ "styx-tracker",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
 ]
 
 [[package]]

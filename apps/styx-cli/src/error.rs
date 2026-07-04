@@ -8,6 +8,10 @@ pub enum CliError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Runtime(#[from] styx_runtime::RuntimeError),
     #[error("IPC sockets are not supported on this platform")]
     UnsupportedIpc,
+    #[error("command is not supported by the memory runtime")]
+    UnsupportedMemoryCommand,
 }
