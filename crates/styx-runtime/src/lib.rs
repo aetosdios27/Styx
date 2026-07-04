@@ -5,9 +5,11 @@ mod control;
 mod download;
 mod engine;
 mod error;
+mod intent;
 mod peer;
 mod rate;
 mod session;
+mod settings;
 mod smoke;
 mod snapshot;
 mod source;
@@ -22,9 +24,11 @@ pub use control::{RuntimeCommand, TorrentCommand};
 pub use download::run_full_v1_download;
 pub use engine::RuntimeEngine;
 pub use error::{FailureScope, RetryClass, RuntimeError};
+pub use intent::{IntentState, RollbackRecord, StageIntent};
 pub use peer::{download_piece_from_peer, DownloadedPiece, PeerPieceRequest};
 pub use rate::RateCounter;
 pub use session::{PeerSessionDriver, SessionFailure, SessionOutcome};
+pub use settings::SettingsPatch;
 pub use smoke::{
     run_one_piece_smoke, run_one_piece_smoke_with_stream, run_one_piece_smoke_with_web_seed_bytes,
 };
