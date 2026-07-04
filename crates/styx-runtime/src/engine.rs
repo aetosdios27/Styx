@@ -24,6 +24,10 @@ impl RuntimeEngine {
         })
     }
 
+    pub fn has_torrent(&self, id: TorrentId) -> bool {
+        self.tasks.contains_key(&id)
+    }
+
     pub fn apply(&mut self, command: RuntimeCommand) -> Result<(), RuntimeError> {
         match command {
             RuntimeCommand::AddPlan(plan) => self.add_plan(*plan),
