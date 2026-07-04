@@ -5,7 +5,7 @@ use styx_disk::{BlockSpec, PieceIndex, ResumeSummary};
 
 use crate::{
     RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeSnapshot,
-    TorrentCommand, TorrentId, TorrentPlan, TorrentTask,
+    SettingsPatch, TorrentCommand, TorrentId, TorrentPlan, TorrentTask,
 };
 
 #[derive(Debug)]
@@ -26,6 +26,10 @@ impl RuntimeEngine {
 
     pub fn has_torrent(&self, id: TorrentId) -> bool {
         self.tasks.contains_key(&id)
+    }
+
+    pub fn config(&self) -> &RuntimeConfig {
+        &self.config
     }
 
     pub fn apply(&mut self, command: RuntimeCommand) -> Result<(), RuntimeError> {
@@ -194,6 +198,16 @@ impl RuntimeEngine {
         Ok(Box::new(task.into_plan()))
     }
 
+    pub fn apply_settings_patch(&mut self, patch: &SettingsPatch) -> Result<(), RuntimeError> {
+        if let Some(port) = patch.listen_port {
+            self.config.listen_port = port;
+        }
+        if let Some(limits) = patch.limits {
+            self.config.limits = limits;
+        }
+        Ok(())
+    }
+
     pub fn rollback(&mut self, record: RollbackRecord) -> Result<(), RuntimeError> {
         match record {
             RollbackRecord::AddRollback { id } => {
@@ -206,7 +220,10 @@ impl RuntimeEngine {
                     .or_insert_with(|| TorrentTask::new(*plan));
                 Ok(())
             }
-            RollbackRecord::SettingsRollback { .. } => Ok(()),
+            RollbackRecord::SettingsRollback { previous } => {
+                self.config = *previous;
+                Ok(())
+            }
         }
     }
 

@@ -5,7 +5,8 @@ use sha1::{Digest, Sha1};
 use styx_proto::{encode, BencodeValue, InfoHashV1};
 use styx_runtime::{
     IntentState, RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError,
-    SettingsPatch, StageIntent, TorrentCommand, TorrentId, TorrentPlan, TorrentStatus,
+    RuntimeLimits, SettingsPatch, StageIntent, TorrentCommand, TorrentId, TorrentPlan,
+    TorrentStatus,
 };
 
 fn tid(byte: u8) -> TorrentId {
@@ -235,4 +236,59 @@ fn settings_intent_rejects_zero_listen_port() {
         result,
         Err(RuntimeError::InvalidConfig("listen port must be non-zero"))
     ));
+}
+
+#[test]
+fn settings_intent_apply_patch_updates_config() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let new_limits = RuntimeLimits {
+        max_active_torrents: 16,
+        ..engine.config().limits
+    };
+    let patch = SettingsPatch {
+        limits: Some(new_limits),
+        listen_port: None,
+    };
+    let intent = StageIntent::Settings { patch };
+
+    intent.validate(&engine).unwrap();
+    let record = intent.execute(&mut engine).unwrap();
+    assert_eq!(engine.config().limits.max_active_torrents, 16);
+    assert!(matches!(
+        record,
+        Some(RollbackRecord::SettingsRollback { .. })
+    ));
+}
+
+#[test]
+fn settings_intent_rollback_restores_previous_config() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let old_limits = engine.config().limits;
+    let patch = SettingsPatch {
+        limits: Some(RuntimeLimits {
+            max_active_torrents: 16,
+            ..old_limits
+        }),
+        listen_port: None,
+    };
+    let intent = StageIntent::Settings { patch };
+
+    let record = intent.execute(&mut engine).unwrap();
+    engine.rollback(record.unwrap()).unwrap();
+    assert_eq!(engine.config().limits, old_limits);
+}
+
+#[test]
+fn settings_intent_none_fields_leave_config_unchanged() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let original = engine.config().limits;
+    let patch = SettingsPatch {
+        limits: None,
+        listen_port: None,
+    };
+    let intent = StageIntent::Settings { patch };
+
+    intent.validate(&engine).unwrap();
+    intent.execute(&mut engine).unwrap();
+    assert_eq!(engine.config().limits, original);
 }

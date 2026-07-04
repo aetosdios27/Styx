@@ -10,6 +10,7 @@ pub struct RuntimeConfig {
     pub source_timeout: Duration,
     pub piece_timeout: Duration,
     pub snapshot_interval: Duration,
+    pub listen_port: u16,
     pub limits: RuntimeLimits,
     pub peer: PeerManagerConfig,
 }
@@ -31,6 +32,7 @@ impl Default for RuntimeConfig {
             source_timeout: Duration::from_secs(15),
             piece_timeout: Duration::from_secs(30),
             snapshot_interval: Duration::from_secs(1),
+            listen_port: 6881,
             limits: RuntimeLimits::default(),
             peer: PeerManagerConfig::default(),
         }
@@ -56,6 +58,7 @@ impl RuntimeConfig {
         validate_duration(self.source_timeout, "source_timeout")?;
         validate_duration(self.piece_timeout, "piece_timeout")?;
         validate_duration(self.snapshot_interval, "snapshot_interval")?;
+        validate_nonzero(self.listen_port as usize, "listen_port")?;
         self.limits.validate()?;
         self.peer.validate().map_err(|err| match err {
             styx_core::CoreError::InvalidConfig { field } => {
@@ -99,6 +102,7 @@ fn invalid_nonzero(field: &'static str) -> RuntimeError {
         "source_timeout" => "source_timeout must be greater than zero",
         "piece_timeout" => "piece_timeout must be greater than zero",
         "snapshot_interval" => "snapshot_interval must be greater than zero",
+        "listen_port" => "listen_port must be greater than zero",
         "max_active_torrents" => "max_active_torrents must be greater than zero",
         "max_peers_per_torrent" => "max_peers_per_torrent must be greater than zero",
         "max_sources_per_torrent" => "max_sources_per_torrent must be greater than zero",

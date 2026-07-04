@@ -62,7 +62,13 @@ impl StageIntent {
                 engine.apply(RuntimeCommand::Torrent(*id, TorrentCommand::Resume))?;
                 Ok(None)
             }
-            Self::Settings { .. } => Ok(None),
+            Self::Settings { patch } => {
+                let previous = engine.config().clone();
+                engine.apply_settings_patch(patch)?;
+                Ok(Some(RollbackRecord::SettingsRollback {
+                    previous: Box::new(previous),
+                }))
+            }
         }
     }
 
@@ -86,8 +92,8 @@ impl StageIntent {
                         return Err(RuntimeError::InvalidConfig("listen port must be non-zero"));
                     }
                 }
-                if let Some(limits) = &patch.limits {
-                    (*limits).validate()?;
+                if let Some(limits) = patch.limits {
+                    limits.validate()?;
                 }
                 Ok(())
             }
