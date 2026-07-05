@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::net::SocketAddr;
 
 use bytes::Bytes;
 use styx_disk::{BlockSpec, PieceIndex, ResumeSummary};
 
 use crate::{
-    RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeSnapshot,
-    SettingsPatch, StageIntent, TorrentCommand, TorrentId, TorrentPlan, TorrentTask,
+    BlockCorruptionTracker, RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeError,
+    RuntimeEvent, RuntimeSnapshot, SettingsPatch, StageIntent, TorrentCommand, TorrentId,
+    TorrentPlan, TorrentTask,
 };
 
 #[derive(Debug)]
@@ -13,6 +15,7 @@ pub struct RuntimeEngine {
     config: RuntimeConfig,
     tasks: BTreeMap<TorrentId, TorrentTask>,
     events: VecDeque<RuntimeEvent>,
+    pub block_corruption: BlockCorruptionTracker,
 }
 
 impl RuntimeEngine {
@@ -21,6 +24,7 @@ impl RuntimeEngine {
             config: config.validate()?,
             tasks: BTreeMap::new(),
             events: VecDeque::new(),
+            block_corruption: BlockCorruptionTracker::new(3),
         })
     }
 
@@ -276,6 +280,10 @@ impl RuntimeEngine {
         });
         events.push(RuntimeEvent::TaskCompleted { torrent: id });
         Ok(events)
+    }
+
+    pub fn record_block_failure(&mut self, piece: u32, block: u32, peer: SocketAddr) -> bool {
+        self.block_corruption.record_failure(piece, block, peer)
     }
 
     pub fn push_event(&mut self, event: RuntimeEvent) {
