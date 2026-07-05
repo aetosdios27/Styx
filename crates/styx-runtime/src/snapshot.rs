@@ -142,7 +142,7 @@ impl TorrentSnapshot {
 
     #[must_use]
     pub fn with_downloaded_bytes(mut self, bytes: u64) -> Self {
-        self.downloaded_bytes = bytes;
+        self.downloaded_bytes = bytes.min(self.total_bytes);
         self
     }
 

@@ -79,10 +79,10 @@ impl PeerConnectionManager {
         if let PeerMessage::Piece {
             index,
             begin,
-            ref block,
+            block,
         } = message
         {
-            return self.handle_piece(peer, index, begin, block.clone(), now);
+            return self.handle_piece(peer, index, begin, block, now);
         }
 
         let session = self

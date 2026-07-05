@@ -161,7 +161,7 @@ impl RuntimeEngine {
             }
         }
         if let Some(task) = self.tasks.get_mut(&id) {
-            for event in task.mark_failed("all sources failed") {
+            for event in task.mark_failed(last_error.as_str()) {
                 self.push_event(event);
             }
         }
