@@ -25,7 +25,7 @@ fn test_piece_file_map() -> Vec<(InfoHashV2, u32)> {
 }
 
 fn test_v1_hashes() -> Vec<[u8; 20]> {
-    let hash = Sha1::digest(&[0u8; 32768]);
+    let hash = Sha1::digest([0u8; 32768]);
     let mut arr = [0u8; 20];
     arr.copy_from_slice(&hash);
     vec![arr]

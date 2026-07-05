@@ -9,10 +9,7 @@ fn make_hybrid_torrent_bytes() -> Vec<u8> {
 
     // Build the file tree: { "test": { "": { "length": 1024, "pieces root": <32 bytes> } } }
     let mut file_entry = BTreeMap::new();
-    file_entry.insert(
-        b"length".to_vec(),
-        BencodeValue::Integer(1024),
-    );
+    file_entry.insert(b"length".to_vec(), BencodeValue::Integer(1024));
     file_entry.insert(
         b"pieces root".to_vec(),
         BencodeValue::Bytes(pieces_root.clone().into()),
@@ -25,33 +22,18 @@ fn make_hybrid_torrent_bytes() -> Vec<u8> {
     );
 
     let mut file_tree_root = BTreeMap::new();
-    file_tree_root.insert(
-        b"test".to_vec(),
-        BencodeValue::Dict(file_marker),
-    );
+    file_tree_root.insert(b"test".to_vec(), BencodeValue::Dict(file_marker));
 
     // Build the info dict with both v1 and v2 fields
     let mut info = BTreeMap::new();
-    info.insert(
-        b"file tree".to_vec(),
-        BencodeValue::Dict(file_tree_root),
-    );
-    info.insert(
-        b"length".to_vec(),
-        BencodeValue::Integer(1024),
-    );
-    info.insert(
-        b"meta version".to_vec(),
-        BencodeValue::Integer(2),
-    );
+    info.insert(b"file tree".to_vec(), BencodeValue::Dict(file_tree_root));
+    info.insert(b"length".to_vec(), BencodeValue::Integer(1024));
+    info.insert(b"meta version".to_vec(), BencodeValue::Integer(2));
     info.insert(
         b"name".to_vec(),
         BencodeValue::Bytes(b"test".as_slice().into()),
     );
-    info.insert(
-        b"piece length".to_vec(),
-        BencodeValue::Integer(16384),
-    );
+    info.insert(b"piece length".to_vec(), BencodeValue::Integer(16384));
     info.insert(
         b"pieces".to_vec(),
         BencodeValue::Bytes(v1_pieces.clone().into()),

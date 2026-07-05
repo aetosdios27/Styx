@@ -7,9 +7,7 @@ use styx_proto::InfoHashV2;
 /// Verification strategy for piece data.
 pub enum PieceVerifier {
     /// v1-only: SHA-1 flat hash per piece
-    V1 {
-        expected_hashes: Vec<[u8; 20]>,
-    },
+    V1 { expected_hashes: Vec<[u8; 20]> },
     /// v2-only: SHA-256 Merkle tree verification
     V2 {
         piece_layers: BTreeMap<InfoHashV2, Vec<[u8; 32]>>,
@@ -33,7 +31,11 @@ pub enum VerificationError {
 }
 
 impl PieceVerifier {
-    pub fn verify_piece(&self, piece_index: u32, piece_data: &[u8]) -> Result<(), VerificationError> {
+    pub fn verify_piece(
+        &self,
+        piece_index: u32,
+        piece_data: &[u8],
+    ) -> Result<(), VerificationError> {
         match self {
             PieceVerifier::V1 { expected_hashes } => {
                 let expected = expected_hashes
@@ -49,7 +51,13 @@ impl PieceVerifier {
                 piece_layers,
                 piece_file_map,
                 blocks_per_piece,
-            } => self.verify_v2_piece(piece_index, piece_data, piece_layers, piece_file_map, *blocks_per_piece),
+            } => self.verify_v2_piece(
+                piece_index,
+                piece_data,
+                piece_layers,
+                piece_file_map,
+                *blocks_per_piece,
+            ),
             PieceVerifier::Hybrid {
                 expected_hashes_v1,
                 piece_layers,
@@ -65,7 +73,13 @@ impl PieceVerifier {
                 }
 
                 let v2_ok = self
-                    .verify_v2_piece(piece_index, piece_data, piece_layers, piece_file_map, *blocks_per_piece)
+                    .verify_v2_piece(
+                        piece_index,
+                        piece_data,
+                        piece_layers,
+                        piece_file_map,
+                        *blocks_per_piece,
+                    )
                     .is_ok();
                 if !v2_ok {
                     return Err(VerificationError::HashMismatch);

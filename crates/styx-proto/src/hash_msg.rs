@@ -87,7 +87,7 @@ impl HashesMessage {
         let proof_layers = u32::from_be_bytes(data[45..49].try_into().unwrap());
 
         let hash_data = &data[49..];
-        if hash_data.len() % 32 != 0 {
+        if !hash_data.len().is_multiple_of(32) {
             return Err(HashMsgError::InvalidHashData);
         }
         let hashes: Vec<[u8; 32]> = hash_data

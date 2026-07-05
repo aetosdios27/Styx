@@ -151,14 +151,18 @@ impl PieceManager {
         proof: &[[u8; 32]],
     ) -> Result<bool, DiskError> {
         let plan = self.plan();
-        let piece_hash = plan
-            .piece_hashes_v2()
-            .get(piece.get() as usize)
-            .ok_or(DiskError::V2PieceOutOfRange {
+        let piece_hash = plan.piece_hashes_v2().get(piece.get() as usize).ok_or(
+            DiskError::V2PieceOutOfRange {
                 piece: piece.get(),
                 max: plan.piece_count() - 1,
-            })?;
-        Ok(verify_block_with_proof(block_data, block_index, proof, piece_hash))
+            },
+        )?;
+        Ok(verify_block_with_proof(
+            block_data,
+            block_index,
+            proof,
+            piece_hash,
+        ))
     }
 
     /// Return whether a piece has been verified.

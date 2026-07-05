@@ -148,6 +148,7 @@ impl PeerSession {
             | PeerMessage::Request { .. }
             | PeerMessage::Piece { .. }
             | PeerMessage::Cancel { .. } => {}
+            PeerMessage::HashRequest(_) | PeerMessage::Hashes(_) | PeerMessage::HashReject(_) => {}
         }
         Ok(Vec::new())
     }

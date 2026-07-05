@@ -1,5 +1,5 @@
 use crate::file_tree::{FileTreeError, V2FlatFile};
-use crate::metainfo::{FileMode, TorrentMetainfo, TorrentFile};
+use crate::metainfo::{FileMode, TorrentFile, TorrentMetainfo};
 use crate::TorrentInfo;
 
 /// Check if a torrent is hybrid (contains both v1 and v2 metadata).
@@ -49,17 +49,10 @@ fn extract_v1_files(info: &TorrentInfo) -> Vec<TorrentFile> {
 #[derive(Debug, thiserror::Error)]
 pub enum HybridError {
     #[error("file count mismatch: v1={v1}, v2={v2}")]
-    FileCountMismatch {
-        v1: usize,
-        v2: usize,
-    },
+    FileCountMismatch { v1: usize, v2: usize },
 
     #[error("file {file_index} length mismatch: v1={v1}, v2={v2}")]
-    FileLengthMismatch {
-        file_index: usize,
-        v1: u64,
-        v2: u64,
-    },
+    FileLengthMismatch { file_index: usize, v1: u64, v2: u64 },
 
     #[error("file tree error: {0}")]
     FileTreeError(#[from] FileTreeError),

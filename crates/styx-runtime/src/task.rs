@@ -221,6 +221,23 @@ impl TorrentTask {
     }
 }
 
+fn is_legal_transition(from: TorrentStatus, to: TorrentStatus) -> bool {
+    matches!(
+        (from, to),
+        (TorrentStatus::Checking, TorrentStatus::Discovering)
+            | (TorrentStatus::Checking, TorrentStatus::Cancelled)
+            | (TorrentStatus::Discovering, TorrentStatus::Downloading)
+            | (TorrentStatus::Discovering, TorrentStatus::Paused)
+            | (TorrentStatus::Discovering, TorrentStatus::Cancelled)
+            | (TorrentStatus::Downloading, TorrentStatus::Paused)
+            | (TorrentStatus::Downloading, TorrentStatus::Complete)
+            | (TorrentStatus::Downloading, TorrentStatus::Cancelled)
+            | (TorrentStatus::Paused, TorrentStatus::Downloading)
+            | (TorrentStatus::Paused, TorrentStatus::Cancelled)
+            | (TorrentStatus::Complete, TorrentStatus::Seeding)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use url::Url;
@@ -267,21 +284,4 @@ mod tests {
         let task = TorrentTask::new(make_v1_plan());
         assert!(task.verify_pieces_root().is_ok());
     }
-}
-
-fn is_legal_transition(from: TorrentStatus, to: TorrentStatus) -> bool {
-    matches!(
-        (from, to),
-        (TorrentStatus::Checking, TorrentStatus::Discovering)
-            | (TorrentStatus::Checking, TorrentStatus::Cancelled)
-            | (TorrentStatus::Discovering, TorrentStatus::Downloading)
-            | (TorrentStatus::Discovering, TorrentStatus::Paused)
-            | (TorrentStatus::Discovering, TorrentStatus::Cancelled)
-            | (TorrentStatus::Downloading, TorrentStatus::Paused)
-            | (TorrentStatus::Downloading, TorrentStatus::Complete)
-            | (TorrentStatus::Downloading, TorrentStatus::Cancelled)
-            | (TorrentStatus::Paused, TorrentStatus::Downloading)
-            | (TorrentStatus::Paused, TorrentStatus::Cancelled)
-            | (TorrentStatus::Complete, TorrentStatus::Seeding)
-    )
 }

@@ -19,11 +19,11 @@ pub mod piece_verifier;
 
 pub use choke::{ChokeController, TransferMode};
 pub use endgame::EndgameController;
-pub use piece_verifier::{PieceVerifier, VerificationError};
 pub use error::CoreError;
 pub use manager::PeerConnectionManager;
 pub use peer::PeerSession;
 pub use picker::{PiecePicker, TorrentState};
+pub use piece_verifier::{PieceVerifier, VerificationError};
 pub use pipeline::{InFlightRequest, RequestPipeline};
 pub use privacy::{
     IdentityEpoch, PeerIdPrefix, PeerIdentity, PeerIdentityManager, PrivacyAction, PrivacyConfig,

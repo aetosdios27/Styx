@@ -178,16 +178,14 @@ pub fn decode_torrent(input: &[u8]) -> Result<TorrentMetainfo, TorrentMetainfoEr
     let info_hash_v2 = Some(sha256_digest(&raw_info));
     let piece_layers = parse_piece_layers(&entries);
 
-    if info.pieces.is_some() && info.file_tree.is_some() {
-        let v2_files = info
-            .file_tree
-            .as_ref()
-            .unwrap()
-            .flatten()
-            .map_err(|e| TorrentMetainfoError::HybridInconsistent(e.to_string()))?;
-        crate::hybrid::validate_hybrid_consistency(&info, &v2_files).map_err(|e| {
-            TorrentMetainfoError::HybridInconsistent(e.to_string())
-        })?;
+    if let Some(ref file_tree) = info.file_tree {
+        if info.pieces.is_some() {
+            let v2_files = file_tree
+                .flatten()
+                .map_err(|e| TorrentMetainfoError::HybridInconsistent(e.to_string()))?;
+            crate::hybrid::validate_hybrid_consistency(&info, &v2_files)
+                .map_err(|e| TorrentMetainfoError::HybridInconsistent(e.to_string()))?;
+        }
     }
 
     Ok(TorrentMetainfo {

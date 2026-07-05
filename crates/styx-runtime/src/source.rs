@@ -233,7 +233,10 @@ impl BlockCorruptionTracker {
     /// Record that a peer sent corrupt data for a specific block.
     /// Returns `true` if the peer should now be quarantined.
     pub fn record_failure(&mut self, piece: u32, block: u32, peer: SocketAddr) -> bool {
-        self.bad_blocks.entry((piece, block)).or_default().push(peer);
+        self.bad_blocks
+            .entry((piece, block))
+            .or_default()
+            .push(peer);
         let total = self
             .bad_blocks
             .values()
