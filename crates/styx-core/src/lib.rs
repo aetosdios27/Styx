@@ -15,8 +15,11 @@ mod privacy;
 mod rate;
 mod types;
 
+pub mod piece_verifier;
+
 pub use choke::{ChokeController, TransferMode};
 pub use endgame::EndgameController;
+pub use piece_verifier::{PieceVerifier, VerificationError};
 pub use error::CoreError;
 pub use manager::PeerConnectionManager;
 pub use peer::PeerSession;

@@ -9,4 +9,8 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 styx-disk = { path = "../styx-disk" }
 styx-proto = { path = "../styx-proto" }
+sha1 = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+sha1 = { workspace = true }
