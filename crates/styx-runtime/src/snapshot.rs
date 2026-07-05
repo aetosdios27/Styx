@@ -55,10 +55,6 @@ pub enum RuntimeEvent {
         from: TorrentStatus,
         to: TorrentStatus,
     },
-    SourceDiscovered {
-        torrent: TorrentId,
-        source: String,
-    },
     SourceFailed {
         torrent: TorrentId,
         source: String,
@@ -77,12 +73,6 @@ pub enum RuntimeEvent {
         torrent: TorrentId,
         verified_bytes: u64,
         total_bytes: u64,
-    },
-    TaskPaused {
-        torrent: TorrentId,
-    },
-    TaskResumed {
-        torrent: TorrentId,
     },
     TaskCancelled {
         torrent: TorrentId,
@@ -172,13 +162,10 @@ impl RuntimeEvent {
             Self::TorrentAdded { .. } => "torrent_added",
             Self::TorrentRemoved { .. } => "torrent_removed",
             Self::StateChanged { .. } => "state_changed",
-            Self::SourceDiscovered { .. } => "source_discovered",
             Self::SourceFailed { .. } => "source_failed",
             Self::SourceQuarantined { .. } => "source_quarantined",
             Self::PieceVerified { .. } => "piece_verified",
             Self::ProgressUpdated { .. } => "progress_updated",
-            Self::TaskPaused { .. } => "task_paused",
-            Self::TaskResumed { .. } => "task_resumed",
             Self::TaskCancelled { .. } => "task_cancelled",
             Self::TaskFailed { .. } => "task_failed",
             Self::TaskCompleted { .. } => "task_completed",
