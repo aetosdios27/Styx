@@ -62,6 +62,8 @@ pub struct Handshake {
     pub peer_id: PeerId,
 }
 
+use crate::hash_msg;
+
 /// A decoded length-prefixed BEP 3 peer message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PeerMessage {
@@ -112,6 +114,12 @@ pub enum PeerMessage {
         /// Canceled block length.
         length: u32,
     },
+    /// Message id 21 (BEP 52) — hash request.
+    HashRequest(Box<hash_msg::HashRequest>),
+    /// Message id 22 (BEP 52) — hashes response.
+    Hashes(Box<hash_msg::HashesMessage>),
+    /// Message id 23 (BEP 52) — hash reject.
+    HashReject(Box<hash_msg::HashReject>),
 }
 
 /// Errors returned while encoding or decoding peer-wire data.
@@ -312,6 +320,18 @@ pub fn encode_message(message: &PeerMessage) -> Result<Bytes, PeerWireError> {
             bytes.put_u8(8);
             put_request_payload(&mut bytes, *index, *begin, *length);
         }
+        PeerMessage::HashRequest(req) => {
+            let encoded = req.encode();
+            bytes.extend_from_slice(&encoded);
+        }
+        PeerMessage::Hashes(h) => {
+            let encoded = h.encode();
+            bytes.extend_from_slice(&encoded);
+        }
+        PeerMessage::HashReject(rej) => {
+            let encoded = rej.encode();
+            bytes.extend_from_slice(&encoded);
+        }
     }
     Ok(bytes.freeze())
 }
@@ -432,6 +452,11 @@ fn validate_outbound_message(message: &PeerMessage) -> Result<(), PeerWireError>
                 actual: 9,
             })
         }
+        PeerMessage::Hashes(h) if h.hashes.is_empty() => Err(PeerWireError::InvalidMessageLength {
+            message: "hashes",
+            expected: "at least 1 hash",
+            actual: 0,
+        }),
         _ => Ok(()),
     }
 }
@@ -447,6 +472,9 @@ fn message_payload_len(message: &PeerMessage) -> usize {
         PeerMessage::Bitfield { bytes } => 1 + bytes.len(),
         PeerMessage::Request { .. } | PeerMessage::Cancel { .. } => 13,
         PeerMessage::Piece { block, .. } => 9 + block.len(),
+        PeerMessage::HashRequest(_) => 1 + 32 + 16,
+        PeerMessage::Hashes(h) => 1 + 32 + 16 + h.hashes.len() * 32,
+        PeerMessage::HashReject(_) => 1 + 32 + 16,
     }
 }
 
@@ -530,6 +558,24 @@ fn decode_message_payload(payload: &[u8]) -> Result<PeerMessage, PeerWireError> 
                 begin,
                 length,
             })
+        }
+        21 => {
+            let payload = [&[hash_msg::HASH_REQUEST_ID], body].concat();
+            hash_msg::HashRequest::decode(&payload)
+                .map(|req| PeerMessage::HashRequest(Box::new(req)))
+                .map_err(|_| PeerWireError::UnknownMessageId { id: 21 })
+        }
+        22 => {
+            let payload = [&[hash_msg::HASHES_ID], body].concat();
+            hash_msg::HashesMessage::decode(&payload)
+                .map(|h| PeerMessage::Hashes(Box::new(h)))
+                .map_err(|_| PeerWireError::UnknownMessageId { id: 22 })
+        }
+        23 => {
+            let payload = [&[hash_msg::HASH_REJECT_ID], body].concat();
+            hash_msg::HashRequest::decode(&payload)
+                .map(|rej| PeerMessage::HashReject(Box::new(rej)))
+                .map_err(|_| PeerWireError::UnknownMessageId { id: 23 })
         }
         _ => Err(PeerWireError::UnknownMessageId { id }),
     }
