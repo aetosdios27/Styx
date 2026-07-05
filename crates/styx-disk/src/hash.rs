@@ -3,6 +3,11 @@ use sha2::Sha256;
 
 use crate::{DiskError, DiskPlan, PieceIndex};
 
+pub use crate::merkle::{
+    merkle_root, piece_layer_hashes, piece_root, verify_block_with_proof, verify_v2_piece_data,
+    MERKLE_BLOCK_SIZE,
+};
+
 /// Verify v1 piece bytes against the SHA-1 hash stored in the disk plan.
 ///
 /// # Errors
