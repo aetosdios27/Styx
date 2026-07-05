@@ -62,18 +62,18 @@ struct SourceEntry {
 
 impl SourceCandidate {
     #[must_use]
-    pub fn peer(address: SocketAddr) -> Self {
+    pub fn peer(id: SourceId, address: SocketAddr) -> Self {
         Self {
-            id: SourceId::new(0),
+            id,
             kind: SourceKind::Peer,
             endpoint: SourceEndpoint::Peer(address),
         }
     }
 
     #[must_use]
-    pub fn web_seed(url: Url) -> Self {
+    pub fn web_seed(id: SourceId, url: Url) -> Self {
         Self {
-            id: SourceId::new(0),
+            id,
             kind: SourceKind::WebSeed,
             endpoint: SourceEndpoint::WebSeed(url),
         }
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn record_success_sets_state_to_active_not_fresh() {
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 6881);
-        let peer = SourceCandidate::peer(addr);
+        let peer = SourceCandidate::peer(SourceId::new(0), addr);
         let mut table = create_table(vec![peer]);
 
         let sid = SourceId::new(1);
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn next_candidates_does_not_return_successful_sources() {
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 6881);
-        let peer = SourceCandidate::peer(addr);
+        let peer = SourceCandidate::peer(SourceId::new(0), addr);
         let mut table = create_table(vec![peer]);
 
         let sid = SourceId::new(1);
@@ -327,8 +327,8 @@ mod tests {
         let addr1 = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 6881);
         let addr2 = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 6881);
         let mut table = create_table(vec![
-            SourceCandidate::peer(addr1),
-            SourceCandidate::peer(addr2),
+            SourceCandidate::peer(SourceId::new(0), addr1),
+            SourceCandidate::peer(SourceId::new(0), addr2),
         ]);
 
         let sid = SourceId::new(1);

@@ -136,7 +136,7 @@ impl TorrentRuntime for AppRuntime {
         }
     }
 
-    fn snapshot(&self) -> AppSnapshot {
+    fn snapshot(&mut self) -> AppSnapshot {
         let snap = self.engine.snapshot();
         let torrents: Vec<TorrentRow> = snap.torrents.iter().map(torrent_snapshot_to_row).collect();
         let totals = SessionTotals {

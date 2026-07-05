@@ -113,7 +113,8 @@ impl RuntimeError {
     pub const fn retry_class(&self) -> RetryClass {
         match self {
             Self::SourceFailed { retry, .. } => *retry,
-            Self::Timeout { .. } | Self::PeerChoked | Self::NoPeers => RetryClass::Retryable,
+            Self::Timeout { .. } | Self::NoPeers => RetryClass::Retryable,
+            Self::PeerChoked => RetryClass::Terminal,
             Self::PieceHashMismatch { .. }
             | Self::UnexpectedPeerMessage { .. }
             | Self::InvalidWebSeedLength { .. } => RetryClass::Quarantine,
@@ -323,9 +324,6 @@ mod tests {
             RuntimeError::NoWebSeeds.scope(),
             FailureScope::TorrentGlobal
         );
-        assert_eq!(
-            RuntimeError::NoWebSeeds.retry_class(),
-            RetryClass::Terminal
-        );
+        assert_eq!(RuntimeError::NoWebSeeds.retry_class(), RetryClass::Terminal);
     }
 }

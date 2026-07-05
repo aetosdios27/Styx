@@ -403,7 +403,7 @@ fn parse_file(value: &BencodeValue) -> Result<TorrentFile, TorrentMetainfoError>
     Ok(TorrentFile { length, path })
 }
 
-fn is_safe_path_component(component: &[u8]) -> bool {
+pub fn is_safe_path_component(component: &[u8]) -> bool {
     !component.is_empty()
         && component != b"."
         && component != b".."

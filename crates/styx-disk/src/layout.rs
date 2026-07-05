@@ -1,7 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use bytes::Bytes;
-use styx_proto::{FileMode, TorrentMetainfo};
+use styx_proto::{is_safe_path_component, FileMode, TorrentMetainfo};
 
 use crate::merkle::MERKLE_BLOCK_SIZE;
 use crate::{DiskError, PieceIndex};
@@ -395,21 +395,12 @@ fn spans_for_range(
 }
 
 fn path_component_from_bytes(bytes: &Bytes) -> Result<String, DiskError> {
-    if !is_safe_component(bytes) {
+    if !is_safe_path_component(bytes) {
         return Err(DiskError::UnsafePath);
     }
     std::str::from_utf8(bytes)
         .map(str::to_owned)
         .map_err(|_| DiskError::UnsafePath)
-}
-
-fn is_safe_component(bytes: &[u8]) -> bool {
-    !bytes.is_empty()
-        && bytes != b"."
-        && bytes != b".."
-        && !bytes
-            .iter()
-            .any(|byte| matches!(byte, b'\0' | b'/' | b'\\'))
 }
 
 fn ensure_relative_target(root: &Path, target: &Path) -> Result<(), DiskError> {

@@ -23,8 +23,8 @@ pub use hybrid::{is_hybrid, validate_hybrid_consistency, HybridError};
 pub use info_hash_v2::{InfoHashV2, SHA256_DIGEST_BYTES};
 pub use magnet_v2::{parse_v2_magnet, MagnetV2Error, V2MagnetInfo};
 pub use metainfo::{
-    decode_torrent, FileMode, InfoHashV1, TorrentFile, TorrentInfo, TorrentMetainfo,
-    TorrentMetainfoError,
+    decode_torrent, is_safe_path_component, FileMode, InfoHashV1, TorrentFile, TorrentInfo,
+    TorrentMetainfo, TorrentMetainfoError,
 };
 pub use peer::{
     decode_handshake, decode_message_frame, decode_message_frame_with_limit, encode_handshake,
