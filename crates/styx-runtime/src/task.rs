@@ -96,6 +96,7 @@ impl TorrentTask {
         }
 
         let mut events = Vec::new();
+        let saved_status = self.status;
         if matches!(self.status, TorrentStatus::Checking) {
             events.extend(self.transition(TorrentStatus::Discovering)?);
         }
@@ -103,7 +104,29 @@ impl TorrentTask {
             events.extend(self.transition(TorrentStatus::Downloading)?);
         }
 
-        for (raw_piece, piece_bytes) in pieces.into_iter().enumerate() {
+        match self.process_piece_bytes(&pieces).await {
+            Ok(additional_events) => events.extend(additional_events),
+            Err(e) => {
+                self.status = saved_status;
+                return Err(e);
+            }
+        }
+
+        if self.pieces.verified_piece_count() == self.plan.piece_count() {
+            events.extend(self.transition(TorrentStatus::Complete)?);
+            events.push(RuntimeEvent::TaskCompleted {
+                torrent: self.plan.id,
+            });
+        }
+        Ok(events)
+    }
+
+    async fn process_piece_bytes(
+        &mut self,
+        pieces: &[Bytes],
+    ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        let mut events = Vec::new();
+        for (raw_piece, piece_bytes) in pieces.iter().enumerate() {
             let piece = PieceIndex::new(raw_piece as u32);
             let specs = block_specs_for_piece(piece, self.plan.piece_length(piece)?)?;
             let mut offset = 0_usize;
@@ -130,13 +153,6 @@ impl TorrentTask {
             if !self.pieces.has_piece(piece) {
                 events.extend(self.accept_piece_blocks(piece, blocks).await?);
             }
-        }
-
-        if self.pieces.verified_piece_count() == self.plan.piece_count() {
-            events.extend(self.transition(TorrentStatus::Complete)?);
-            events.push(RuntimeEvent::TaskCompleted {
-                torrent: self.plan.id,
-            });
         }
         Ok(events)
     }
@@ -207,6 +223,9 @@ impl TorrentTask {
 
     fn transition(&mut self, to: TorrentStatus) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         let from = self.status;
+        if from == to {
+            return Ok(Vec::new());
+        }
         if !is_legal_transition(from, to) {
             return Err(RuntimeError::InvalidConfig(
                 "illegal torrent state transition",
@@ -283,5 +302,24 @@ mod tests {
     fn verify_pieces_root_v1_returns_ok() {
         let task = TorrentTask::new(make_v1_plan());
         assert!(task.verify_pieces_root().is_ok());
+    }
+
+    #[test]
+    fn transition_to_same_status_returns_empty_events() {
+        let task = &mut TorrentTask::new(make_v1_plan());
+        let events = task.transition(TorrentStatus::Checking).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn complete_from_piece_bytes_reverts_status_on_failure() {
+        let mut task = TorrentTask::new(make_v1_plan());
+        assert_eq!(task.status, TorrentStatus::Checking);
+
+        // Pass pieces with wrong data (zeros) — hash won't match 0xAB...AB in plan
+        let wrong_pieces = vec![Bytes::from(vec![0u8; 16384]), Bytes::from(vec![0u8; 16384])];
+        let result = task.complete_from_piece_bytes(wrong_pieces).await;
+        assert!(result.is_err());
+        assert_eq!(task.status, TorrentStatus::Checking);
     }
 }
