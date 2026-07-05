@@ -9,6 +9,7 @@ pub mod file_tree;
 pub mod info_hash_v2;
 pub mod hash_msg;
 pub mod hybrid;
+pub mod magnet_v2;
 pub mod metainfo;
 pub mod peer;
 
@@ -17,6 +18,7 @@ pub use file_tree::{FileTreeError, V2FileEntry, V2FileTree, V2FileTreeNode, V2Fl
 pub use hash_msg::{HashMsgError, HashReject, HashRequest, HashesMessage, HASHES_ID, HASH_REJECT_ID, HASH_REQUEST_ID};
 pub use hybrid::{is_hybrid, validate_hybrid_consistency, HybridError};
 pub use info_hash_v2::{InfoHashV2, SHA256_DIGEST_BYTES};
+pub use magnet_v2::{parse_v2_magnet, MagnetV2Error, V2MagnetInfo};
 pub use metainfo::{
     decode_torrent, FileMode, InfoHashV1, TorrentFile, TorrentInfo, TorrentMetainfo,
     TorrentMetainfoError,
