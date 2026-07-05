@@ -24,6 +24,8 @@ pub enum RetryClass {
 pub enum RuntimeError {
     #[error("invalid runtime config: {0}")]
     InvalidConfig(&'static str),
+    #[error("v2-only torrents require hybrid support or a v2-capable transport")]
+    V2NotSupported,
     #[error("torrent does not contain an HTTP tracker announce URL")]
     NoHttpTracker,
     #[error("invalid tracker URL `{url}`")]
@@ -83,6 +85,7 @@ impl RuntimeError {
             }
             Self::NoHttpTracker
             | Self::NoPeers
+            | Self::V2NotSupported
             | Self::AllPeersFailed { .. }
             | Self::UnsupportedWebSeedLayout
             | Self::PieceHashMismatch { .. }
@@ -111,6 +114,7 @@ impl RuntimeError {
             Self::Backpressure { .. } => RetryClass::Retryable,
             Self::AllPeersFailed { .. }
             | Self::NoHttpTracker
+            | Self::V2NotSupported
             | Self::UnsupportedWebSeedLayout
             | Self::InvalidConfig(_)
             | Self::InvalidTrackerUrl { .. }
@@ -131,6 +135,7 @@ impl PartialEq for RuntimeError {
             (self, other),
             (Self::InvalidConfig(left), Self::InvalidConfig(right)) if left == right
         ) || matches!((self, other), (Self::NoHttpTracker, Self::NoHttpTracker))
+            || matches!((self, other), (Self::V2NotSupported, Self::V2NotSupported))
             || matches!((self, other), (Self::PeerChoked, Self::PeerChoked))
             || matches!(
                 (self, other),

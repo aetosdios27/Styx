@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use bytes::Bytes;
 use styx_disk::{DiskPlan, PieceIndex};
-use styx_proto::{decode_torrent, FileMode, InfoHashV1, TorrentMetainfo};
+use styx_proto::{decode_torrent, FileMode, InfoHashV1, InfoHashV2, TorrentMetainfo};
 use url::Url;
 
 use crate::{RuntimeError, SmokeConfig, SmokeTarget};
@@ -12,6 +12,7 @@ pub struct TorrentPlan {
     pub metainfo: TorrentMetainfo,
     pub id: TorrentId,
     pub info_hash: InfoHashV1,
+    pub info_hash_v2: Option<InfoHashV2>,
     pub name: String,
     pub total_size: u64,
     pub announce_urls: Vec<Url>,
@@ -54,11 +55,17 @@ impl TorrentPlan {
         if announce_urls.is_empty() && web_seed_urls.is_empty() {
             return Err(RuntimeError::NoHttpTracker);
         }
-        let disk_plan = DiskPlan::from_metainfo(&metainfo, destination)?;
+        let info_hash_v2 = metainfo.info_hash_v2;
+        let disk_plan = if info_hash_v2.is_some() && metainfo.info.pieces.is_none() {
+            return Err(RuntimeError::V2NotSupported);
+        } else {
+            DiskPlan::from_metainfo(&metainfo, destination)?
+        };
         let info_hash = metainfo.info_hash_v1;
         Ok(Self {
             id: TorrentId::new(info_hash),
             info_hash,
+            info_hash_v2,
             name: String::from_utf8_lossy(&metainfo.info.name).into_owned(),
             metainfo,
             total_size,
