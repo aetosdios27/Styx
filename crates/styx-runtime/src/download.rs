@@ -16,7 +16,7 @@ pub async fn run_full_v1_download(
     config.validate()?;
     let plan = TorrentPlan::from_file(&config.torrent_path, &config.destination)?;
     if plan.web_seed_urls.is_empty() {
-        return Err(RuntimeError::NoPeers);
+        return Err(RuntimeError::NoWebSeeds);
     }
 
     let id = plan.id;

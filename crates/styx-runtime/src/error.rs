@@ -38,6 +38,8 @@ pub enum RuntimeError {
     PieceHashMismatch { piece: u32 },
     #[error("tracker announce returned no usable peers")]
     NoPeers,
+    #[error("torrent does not contain any web seed URLs")]
+    NoWebSeeds,
     #[error("all peer smoke attempts failed: {last_error}")]
     AllPeersFailed { last_error: String },
     #[error("web seed smoke path supports single-file torrents only")]
@@ -87,6 +89,7 @@ impl RuntimeError {
             }
             Self::NoHttpTracker
             | Self::NoPeers
+            | Self::NoWebSeeds
             | Self::V2NotSupported
             | Self::V2IntegrityCheckFailed(_)
             | Self::AllPeersFailed { .. }
@@ -117,6 +120,7 @@ impl RuntimeError {
             Self::Backpressure { .. } => RetryClass::Retryable,
             Self::AllPeersFailed { .. }
             | Self::NoHttpTracker
+            | Self::NoWebSeeds
             | Self::V2NotSupported
             | Self::V2IntegrityCheckFailed(_)
             | Self::UnsupportedWebSeedLayout
@@ -159,6 +163,7 @@ impl PartialEq for RuntimeError {
                     if left == right
             )
             || matches!((self, other), (Self::NoPeers, Self::NoPeers))
+            || matches!((self, other), (Self::NoWebSeeds, Self::NoWebSeeds))
             || matches!(
                 (self, other),
                 (Self::AllPeersFailed { last_error: left }, Self::AllPeersFailed { last_error: right })
@@ -299,6 +304,28 @@ mod tests {
         assert_eq!(RuntimeError::Cancelled, RuntimeError::Cancelled);
         assert_eq!(RuntimeError::NoHttpTracker, RuntimeError::NoHttpTracker);
         assert_eq!(RuntimeError::PeerChoked, RuntimeError::PeerChoked);
+        assert_eq!(RuntimeError::NoWebSeeds, RuntimeError::NoWebSeeds);
         assert_ne!(RuntimeError::Cancelled, RuntimeError::NoHttpTracker);
+        assert_ne!(RuntimeError::NoWebSeeds, RuntimeError::NoPeers);
+    }
+
+    #[test]
+    fn no_web_seeds_error_string() {
+        assert_eq!(
+            RuntimeError::NoWebSeeds.to_string(),
+            "torrent does not contain any web seed URLs"
+        );
+    }
+
+    #[test]
+    fn no_web_seeds_scope_and_retry() {
+        assert_eq!(
+            RuntimeError::NoWebSeeds.scope(),
+            FailureScope::TorrentGlobal
+        );
+        assert_eq!(
+            RuntimeError::NoWebSeeds.retry_class(),
+            RetryClass::Terminal
+        );
     }
 }
