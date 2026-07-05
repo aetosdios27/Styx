@@ -414,7 +414,7 @@ mod tests {
             info: TorrentInfo {
                 name: Bytes::from_static(b"file.bin"),
                 piece_length,
-                pieces: Bytes::from(hashes),
+                pieces: Some(Bytes::from(hashes)),
                 private: false,
                 mode: FileMode::Single {
                     length: total_length,

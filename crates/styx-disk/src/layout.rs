@@ -71,7 +71,11 @@ impl DiskPlan {
                 .ok_or(DiskError::IntegerOverflow)
         })?;
         let piece_count = piece_count(total_length, piece_length)?;
-        let piece_hashes_v1 = piece_hashes(&meta.info.pieces)?;
+        let pieces = meta.info.pieces.as_ref().ok_or(DiskError::InvalidPieceHashCount {
+            expected: piece_count,
+            actual: 0,
+        })?;
+        let piece_hashes_v1 = piece_hashes(pieces)?;
         let actual_piece_hashes =
             u32::try_from(piece_hashes_v1.len()).map_err(|_| DiskError::IntegerOverflow)?;
         if actual_piece_hashes != piece_count {
@@ -341,7 +345,7 @@ mod tests {
         let meta = metainfo(TorrentInfo {
             name: Bytes::from_static(b"image.iso"),
             piece_length: 16 * 1024,
-            pieces: Bytes::from(vec![0_u8; 20 * 3]),
+            pieces: Some(Bytes::from(vec![0_u8; 20 * 3])),
             private: false,
             mode: FileMode::Single { length: 40 * 1024 },
         });
@@ -367,7 +371,7 @@ mod tests {
         let meta = metainfo(TorrentInfo {
             name: Bytes::from_static(b"album"),
             piece_length: 16 * 1024,
-            pieces: Bytes::from(vec![0_u8; 20 * 2]),
+            pieces: Some(Bytes::from(vec![0_u8; 20 * 2])),
             private: false,
             mode: FileMode::Multi {
                 files: vec![
@@ -418,7 +422,7 @@ mod tests {
         let meta = metainfo(TorrentInfo {
             name: Bytes::from_static(b".."),
             piece_length: 16 * 1024,
-            pieces: Bytes::from(vec![0_u8; 20]),
+            pieces: Some(Bytes::from(vec![0_u8; 20])),
             private: false,
             mode: FileMode::Single { length: 1 },
         });
@@ -433,7 +437,7 @@ mod tests {
         let meta = metainfo(TorrentInfo {
             name: Bytes::from_static(b"image.iso"),
             piece_length: 16 * 1024,
-            pieces: Bytes::from(vec![0_u8; 20]),
+            pieces: Some(Bytes::from(vec![0_u8; 20])),
             private: false,
             mode: FileMode::Single { length: 40 * 1024 },
         });
@@ -454,7 +458,7 @@ mod tests {
         let meta = metainfo(TorrentInfo {
             name: Bytes::from_static(b"image.iso"),
             piece_length: 16 * 1024,
-            pieces: Bytes::from(vec![0_u8; 21]),
+            pieces: Some(Bytes::from(vec![0_u8; 21])),
             private: false,
             mode: FileMode::Single { length: 1 },
         });
@@ -475,7 +479,7 @@ mod tests {
         let meta = metainfo(TorrentInfo {
             name: Bytes::from_static(b"image.iso"),
             piece_length: 0,
-            pieces: Bytes::from(vec![0_u8; 20]),
+            pieces: Some(Bytes::from(vec![0_u8; 20])),
             private: false,
             mode: FileMode::Single { length: 1 },
         });

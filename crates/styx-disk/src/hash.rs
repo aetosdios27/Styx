@@ -93,7 +93,7 @@ mod tests {
             info: TorrentInfo {
                 name: Bytes::from_static(b"file.bin"),
                 piece_length: 16 * 1024,
-                pieces: Bytes::copy_from_slice(&hash),
+                pieces: Some(Bytes::copy_from_slice(&hash)),
                 private: false,
                 mode: FileMode::Single { length: 3 },
             },

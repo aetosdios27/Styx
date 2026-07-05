@@ -53,7 +53,8 @@ pub struct TorrentInfo {
     /// Piece length in bytes.
     pub piece_length: u64,
     /// Concatenated 20-byte SHA-1 piece hashes.
-    pub pieces: Bytes,
+    /// `None` for v2-only torrents (BEP 52 info dict omits this key).
+    pub pieces: Option<Bytes>,
     /// Optional private torrent flag.
     pub private: bool,
     /// Single-file or multi-file layout.
@@ -217,10 +218,27 @@ fn parse_info(value: &BencodeValue) -> Result<TorrentInfo, TorrentMetainfoError>
     let dict = expect_dict(value, "info")?;
     let name = required_non_empty_bytes(dict, b"name", "info")?;
     let piece_length = required_positive_u64(dict, b"piece length", "info")?;
-    let pieces = required_non_empty_bytes(dict, b"pieces", "info")?;
-    if pieces.len() % SHA1_DIGEST_BYTES != 0 {
-        return Err(TorrentMetainfoError::InvalidPiecesLength);
-    }
+    let pieces = match dict.get(&b"pieces"[..]) {
+        Some(BencodeValue::Bytes(pieces)) if !pieces.is_empty() => {
+            if pieces.len() % SHA1_DIGEST_BYTES != 0 {
+                return Err(TorrentMetainfoError::InvalidPiecesLength);
+            }
+            Some(pieces.clone())
+        }
+        Some(BencodeValue::Bytes(_)) => {
+            return Err(TorrentMetainfoError::EmptyBytes {
+                field: "pieces",
+                context: "info",
+            });
+        }
+        Some(_) => {
+            return Err(TorrentMetainfoError::WrongType {
+                field: "pieces",
+                context: "info",
+            });
+        }
+        None => None,
+    };
 
     let private = optional_boolish_int(dict, b"private", "info")?.unwrap_or(false);
     let length = optional_non_negative_u64(dict, b"length", "info")?;
