@@ -31,13 +31,19 @@ pub struct V2FileTree {
 }
 
 /// Errors from v2 file tree validation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum FileTreeError {
+    #[error("file tree root is a file, not a directory")]
     RootIsFile,
+    #[error("empty file path component")]
     EmptyComponent,
+    #[error("path traversal component: {0:?}")]
     PathTraversal(Vec<u8>),
+    #[error("path component contains separator: {0:?}")]
     PathSeparator(Vec<u8>),
+    #[error("file tree contains no files")]
     NoFiles,
+    #[error("duplicate file path")]
     DuplicatePath,
 }
 
