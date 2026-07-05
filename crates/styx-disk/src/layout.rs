@@ -71,10 +71,14 @@ impl DiskPlan {
                 .ok_or(DiskError::IntegerOverflow)
         })?;
         let piece_count = piece_count(total_length, piece_length)?;
-        let pieces = meta.info.pieces.as_ref().ok_or(DiskError::InvalidPieceHashCount {
-            expected: piece_count,
-            actual: 0,
-        })?;
+        let pieces = meta
+            .info
+            .pieces
+            .as_ref()
+            .ok_or(DiskError::InvalidPieceHashCount {
+                expected: piece_count,
+                actual: 0,
+            })?;
         let piece_hashes_v1 = piece_hashes(pieces)?;
         let actual_piece_hashes =
             u32::try_from(piece_hashes_v1.len()).map_err(|_| DiskError::IntegerOverflow)?;

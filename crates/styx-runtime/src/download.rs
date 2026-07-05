@@ -57,7 +57,7 @@ pub async fn run_full_v1_download(
     })
 }
 
-async fn download_all_pieces_from_web_seed(
+pub(crate) async fn download_all_pieces_from_web_seed(
     client: &reqwest::Client,
     plan: &TorrentPlan,
     seed: &url::Url,

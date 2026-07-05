@@ -1,4 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
+
+use tokio::sync::mpsc;
 
 use styx_app::{
     commands::{CommandResponse, ControlCommand},
@@ -13,6 +16,7 @@ use styx_app::{
 };
 
 use crate::{
+    driver::{spawn_bg_download, BgEvent},
     RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, RuntimeSnapshot,
     TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot, TorrentStatus,
 };
@@ -26,15 +30,24 @@ pub struct AppRuntime {
     speed: VecDeque<SpeedSample>,
     logs: VecDeque<LogLine>,
     tick_count: u64,
+    bg_tx: mpsc::UnboundedSender<BgEvent>,
+    bg_rx: mpsc::UnboundedReceiver<BgEvent>,
+    bg_handles: HashMap<TorrentId, tokio::task::JoinHandle<()>>,
+    pending_plans: HashMap<TorrentId, TorrentPlan>,
 }
 
 impl AppRuntime {
     pub fn new(engine: RuntimeEngine) -> Self {
+        let (bg_tx, bg_rx) = mpsc::unbounded_channel();
         Self {
             engine,
             speed: VecDeque::with_capacity(DEFAULT_SPEED_SAMPLES),
             logs: VecDeque::with_capacity(MAX_LOG_LINES),
             tick_count: 0,
+            bg_tx,
+            bg_rx,
+            bg_handles: HashMap::new(),
+            pending_plans: HashMap::new(),
         }
     }
 
@@ -67,6 +80,7 @@ impl AppRuntime {
         let id = plan.id;
         let name = plan.name.clone();
         let info_hash = InfoHashHex::new(*id.as_bytes());
+        self.pending_plans.insert(id, plan.clone());
         self.engine
             .apply(RuntimeCommand::AddPlan(Box::new(plan)))
             .map_err(map_runtime_error)?;
@@ -86,6 +100,10 @@ impl TorrentRuntime for AppRuntime {
             } => self.apply_add(source, destination),
             ControlCommand::Remove { info_hash } => {
                 let id = torrent_id_from_hex(info_hash)?;
+                if let Some(handle) = self.bg_handles.remove(&id) {
+                    handle.abort();
+                }
+                self.pending_plans.remove(&id);
                 self.engine
                     .apply(RuntimeCommand::Remove(id))
                     .map_err(map_runtime_error)?;
@@ -137,16 +155,78 @@ impl TorrentRuntime for AppRuntime {
     }
 
     fn tick(&mut self) -> Vec<AppEvent> {
+        // 1. Process background download events
+        while let Ok(bg) = self.bg_rx.try_recv() {
+            match bg {
+                BgEvent::Progress {
+                    id,
+                    verified_bytes,
+                    total_bytes: _,
+                } => {
+                    let _ = self.engine.sync_progress(id, verified_bytes);
+                }
+                BgEvent::Completed { id } => {
+                    self.bg_handles.remove(&id);
+                    self.pending_plans.remove(&id);
+                    if let Ok(events) = self.engine.replace_with_completed(id) {
+                        for e in events {
+                            self.engine.push_event(e);
+                        }
+                    }
+                }
+                BgEvent::Failed { id, reason } => {
+                    self.bg_handles.remove(&id);
+                    self.pending_plans.remove(&id);
+                    self.engine.push_event(RuntimeEvent::TaskFailed {
+                        torrent: id,
+                        reason,
+                    });
+                }
+                BgEvent::SourceFailed { id, source, reason } => {
+                    self.engine.push_event(RuntimeEvent::SourceFailed {
+                        torrent: id,
+                        source,
+                        reason,
+                    });
+                }
+            }
+        }
+
+        // 2. Spawn bg tasks for torrents in Discovering state
+        {
+            let snap = self.engine.snapshot();
+            for tor in &snap.torrents {
+                if tor.status == TorrentStatus::Discovering
+                    && !self.bg_handles.contains_key(&tor.id)
+                {
+                    if let Some(plan) = self.pending_plans.get(&tor.id).cloned() {
+                        let tx = self.bg_tx.clone();
+                        if let Some(handle) = spawn_bg_download(plan, tx, Duration::from_secs(30)) {
+                            self.bg_handles.insert(tor.id, handle);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Drain engine events
         let engine_events = self.engine.drain_events();
         let snap = self.engine.snapshot();
 
         let mut app_events = Vec::new();
+        let mut progress_changed = false;
 
-        for event in engine_events {
-            if let Some(app_event) = map_to_app_event(&event, &snap) {
+        for event in &engine_events {
+            if matches!(
+                event,
+                RuntimeEvent::ProgressUpdated { .. } | RuntimeEvent::TaskCompleted { .. }
+            ) {
+                progress_changed = true;
+            }
+            if let Some(app_event) = map_to_app_event(event, &snap) {
                 app_events.push(app_event);
             }
-            if let Some(log) = map_to_log_line(&event) {
+            if let Some(log) = map_to_log_line(event) {
                 if self.logs.len() >= MAX_LOG_LINES {
                     self.logs.pop_front();
                 }
@@ -154,6 +234,14 @@ impl TorrentRuntime for AppRuntime {
             }
         }
 
+        // 4. Emit snapshot event on progress change for GUI push
+        if progress_changed {
+            app_events.push(AppEvent::Snapshot {
+                snapshot: self.snapshot(),
+            });
+        }
+
+        // 5. Speed samples
         let total_down: u64 = snap.torrents.iter().map(|t| t.down_rate).sum();
         let total_up: u64 = snap.torrents.iter().map(|t| t.up_rate).sum();
         if self.speed.len() >= DEFAULT_SPEED_SAMPLES {
@@ -199,6 +287,16 @@ fn map_to_app_event(event: &RuntimeEvent, snap: &RuntimeSnapshot) -> Option<AppE
         RuntimeEvent::TorrentRemoved { torrent } => Some(AppEvent::TorrentRemoved {
             info_hash: InfoHashHex::new(*torrent.as_bytes()),
         }),
+        RuntimeEvent::TaskCompleted { torrent } => {
+            let info_hash = InfoHashHex::new(*torrent.as_bytes());
+            let name = snap
+                .torrents
+                .iter()
+                .find(|t| t.id == *torrent)
+                .map(|t| t.name.clone())
+                .unwrap_or_default();
+            Some(AppEvent::TorrentCompleted { info_hash, name })
+        }
         _ => None,
     }
 }
@@ -226,6 +324,14 @@ fn map_to_log_line(event: &RuntimeEvent) -> Option<LogLine> {
         RuntimeEvent::TaskFailed { torrent, reason } => Some(LogLine {
             level: LogLevel::Error,
             message: format!("torrent {torrent:?} failed: {reason}"),
+        }),
+        RuntimeEvent::PieceVerified {
+            torrent,
+            piece,
+            bytes,
+        } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!("torrent {torrent:?} piece {piece} verified ({bytes} bytes)"),
         }),
         RuntimeEvent::TaskCompleted { torrent } => Some(LogLine {
             level: LogLevel::Info,

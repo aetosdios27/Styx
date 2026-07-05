@@ -149,6 +149,15 @@ impl TorrentTask {
         }]
     }
 
+    pub fn set_verified_bytes(&mut self, bytes: u64) {
+        self.verified_bytes = bytes.min(self.plan.total_size);
+    }
+
+    pub fn set_status_complete(&mut self) {
+        self.status = TorrentStatus::Complete;
+        self.verified_bytes = self.plan.total_size;
+    }
+
     pub async fn resume_verify(&mut self) -> Result<ResumeSummary, RuntimeError> {
         let summary = self.pieces.resume_verify().await?;
         let mut verified_bytes = 0_u64;

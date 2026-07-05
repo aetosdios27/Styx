@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod control;
 mod download;
+mod driver;
 mod engine;
 mod error;
 mod intent;

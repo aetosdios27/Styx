@@ -318,7 +318,8 @@ mod tests {
             TorrentInfo {
                 name: Bytes::from_static(b"file.bin"),
                 piece_length: 16 * 1024,
-                pieces: Some(Bytes::from(vec![0_u8; 20])),                private: false,
+                pieces: Some(Bytes::from(vec![0_u8; 20])),
+                private: false,
                 mode: FileMode::Single { length: 5 },
             },
         );
@@ -347,7 +348,8 @@ mod tests {
             TorrentInfo {
                 name: Bytes::from_static(b"album"),
                 piece_length: 16 * 1024,
-                pieces: Some(Bytes::from(vec![0_u8; 20 * 2])),                private: false,
+                pieces: Some(Bytes::from(vec![0_u8; 20 * 2])),
+                private: false,
                 mode: FileMode::Multi {
                     files: vec![
                         TorrentFile {

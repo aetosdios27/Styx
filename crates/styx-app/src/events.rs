@@ -23,4 +23,12 @@ pub enum AppEvent {
         command: String,
         error: String,
     },
+    TorrentCompleted {
+        info_hash: InfoHashHex,
+        name: String,
+    },
+    TorrentFailed {
+        info_hash: InfoHashHex,
+        error: String,
+    },
 }

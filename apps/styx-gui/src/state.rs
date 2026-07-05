@@ -1,6 +1,6 @@
 use tokio::sync::Mutex;
 
-use styx_app::AppError;
+use styx_app::{events::AppEvent, AppError, TorrentRuntime};
 use styx_runtime::{AppRuntime, RuntimeConfig, RuntimeEngine};
 
 #[derive(Debug)]
@@ -23,5 +23,10 @@ impl GuiState {
     pub async fn with_runtime<T>(&self, f: impl FnOnce(&mut AppRuntime) -> T) -> T {
         let mut runtime = self.runtime.lock().await;
         f(&mut runtime)
+    }
+
+    pub async fn tick(&self) -> Vec<AppEvent> {
+        let mut runtime = self.runtime.lock().await;
+        runtime.tick()
     }
 }

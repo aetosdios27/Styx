@@ -246,7 +246,39 @@ impl RuntimeEngine {
         Ok(events)
     }
 
-    fn push_event(&mut self, event: RuntimeEvent) {
+    pub fn sync_progress(
+        &mut self,
+        id: TorrentId,
+        verified_bytes: u64,
+    ) -> Result<(), RuntimeError> {
+        let task = self
+            .tasks
+            .get_mut(&id)
+            .ok_or(RuntimeError::InvalidConfig("unknown torrent"))?;
+        task.set_verified_bytes(verified_bytes);
+        Ok(())
+    }
+
+    pub fn replace_with_completed(
+        &mut self,
+        id: TorrentId,
+    ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        let (plan, mut events) = self.remove_torrent_intent(id)?;
+        let total_size = plan.total_size;
+        let mut task = TorrentTask::new(*plan);
+        task.set_status_complete();
+        self.tasks.insert(id, task);
+        events.push(RuntimeEvent::TorrentAdded { torrent: id });
+        events.push(RuntimeEvent::ProgressUpdated {
+            torrent: id,
+            verified_bytes: total_size,
+            total_bytes: total_size,
+        });
+        events.push(RuntimeEvent::TaskCompleted { torrent: id });
+        Ok(events)
+    }
+
+    pub fn push_event(&mut self, event: RuntimeEvent) {
         if self.events.len() == self.config.limits.max_event_queue {
             self.events.pop_front();
         }
