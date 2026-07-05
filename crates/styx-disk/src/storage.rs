@@ -396,6 +396,7 @@ mod tests {
             url_list: Vec::new(),
             info,
             info_hash_v1: InfoHashV1::new([0; 20]),
+            info_hash_v2: None,
             raw_info: Bytes::new(),
         };
         DiskPlan::from_metainfo(&meta, root).unwrap()

@@ -5,8 +5,10 @@ use std::ops::Range;
 
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 
 use crate::bencode::{decode_top_level_dict_entries, BencodeError, BencodeValue};
+use crate::{InfoHashV2, SHA256_DIGEST_BYTES};
 
 const SHA1_DIGEST_BYTES: usize = 20;
 
@@ -41,6 +43,9 @@ pub struct TorrentMetainfo {
     pub info: TorrentInfo,
     /// SHA-1 hash of the exact bencoded `info` dictionary bytes.
     pub info_hash_v1: InfoHashV1,
+    /// SHA-256 hash of the exact bencoded `info` dictionary bytes (BEP 52).
+    /// Always computed for every torrent, regardless of v1/v2.
+    pub info_hash_v2: Option<InfoHashV2>,
     /// Exact bencoded `info` dictionary bytes from the source file.
     pub raw_info: Bytes,
 }
@@ -158,6 +163,7 @@ pub fn decode_torrent(input: &[u8]) -> Result<TorrentMetainfo, TorrentMetainfoEr
     let info = parse_info(&info_entry.value)?;
     let raw_info = raw_slice(input, info_entry.value_span.clone());
     let info_hash_v1 = sha1_digest(&raw_info);
+    let info_hash_v2 = Some(sha256_digest(&raw_info));
 
     Ok(TorrentMetainfo {
         announce,
@@ -165,6 +171,7 @@ pub fn decode_torrent(input: &[u8]) -> Result<TorrentMetainfo, TorrentMetainfoEr
         url_list,
         info,
         info_hash_v1,
+        info_hash_v2,
         raw_info,
     })
 }
@@ -525,6 +532,13 @@ fn sha1_digest(bytes: &[u8]) -> InfoHashV1 {
     InfoHashV1(output)
 }
 
+fn sha256_digest(bytes: &[u8]) -> InfoHashV2 {
+    let digest = Sha256::digest(bytes);
+    let mut output = [0u8; SHA256_DIGEST_BYTES];
+    output.copy_from_slice(&digest);
+    InfoHashV2::new(output)
+}
+
 fn field_name(field: &'static [u8]) -> &'static str {
     match field {
         b"announce" => "announce",
@@ -575,6 +589,21 @@ mod tests {
             &[
                 0x8f, 0xba, 0x42, 0x94, 0x27, 0x84, 0x64, 0x87, 0xc7, 0x30, 0x3d, 0xee, 0x26, 0x2f,
                 0x88, 0x7f, 0x23, 0xe7, 0x49, 0xec,
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_torrent_computes_sha256_info_hash_v2() {
+        let metainfo = decode_torrent(fixture(SINGLE_FILE_TORRENT)).unwrap();
+
+        assert!(metainfo.info_hash_v2.is_some());
+        assert_eq!(
+            metainfo.info_hash_v2.unwrap().as_bytes(),
+            &[
+                0x48, 0xfe, 0x13, 0xad, 0x89, 0xde, 0x77, 0xe8, 0xb8, 0x89, 0x06, 0xba, 0xb3, 0x40,
+                0xc6, 0x10, 0x5b, 0x04, 0xb6, 0x98, 0x51, 0x30, 0x09, 0x24, 0x89, 0xc7, 0x78, 0x62,
+                0xa7, 0x6e, 0xc8, 0x1f,
             ]
         );
     }
