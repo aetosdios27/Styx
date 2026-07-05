@@ -57,6 +57,8 @@ pub enum RuntimeError {
         retry: RetryClass,
         reason: String,
     },
+    #[error("v2 integrity check failed: {0}")]
+    V2IntegrityCheckFailed(&'static str),
     #[error("runtime backpressure while {stage}")]
     Backpressure { stage: &'static str },
     #[error("runtime task was cancelled")]
@@ -86,6 +88,7 @@ impl RuntimeError {
             Self::NoHttpTracker
             | Self::NoPeers
             | Self::V2NotSupported
+            | Self::V2IntegrityCheckFailed(_)
             | Self::AllPeersFailed { .. }
             | Self::UnsupportedWebSeedLayout
             | Self::PieceHashMismatch { .. }
@@ -115,6 +118,7 @@ impl RuntimeError {
             Self::AllPeersFailed { .. }
             | Self::NoHttpTracker
             | Self::V2NotSupported
+            | Self::V2IntegrityCheckFailed(_)
             | Self::UnsupportedWebSeedLayout
             | Self::InvalidConfig(_)
             | Self::InvalidTrackerUrl { .. }
@@ -207,6 +211,10 @@ impl PartialEq for RuntimeError {
                     && left_scope == right_scope
                     && left_retry == right_retry
                     && left_reason == right_reason
+            )
+            || matches!(
+                (self, other),
+                (Self::V2IntegrityCheckFailed(left), Self::V2IntegrityCheckFailed(right)) if left == right
             )
             || matches!(
                 (self, other),

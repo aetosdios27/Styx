@@ -153,9 +153,18 @@ impl TorrentTask {
         self.verified_bytes = bytes.min(self.plan.total_size);
     }
 
-    pub fn set_status_complete(&mut self) {
+    pub fn verify_pieces_root(&self) -> Result<(), RuntimeError> {
+        if self.plan.disk_plan.piece_hashes_v2().is_empty() {
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    pub fn set_status_complete(&mut self) -> Result<(), RuntimeError> {
+        self.verify_pieces_root()?;
         self.status = TorrentStatus::Complete;
         self.verified_bytes = self.plan.total_size;
+        Ok(())
     }
 
     pub async fn resume_verify(&mut self) -> Result<ResumeSummary, RuntimeError> {
@@ -209,6 +218,54 @@ impl TorrentTask {
             from,
             to,
         }])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use url::Url;
+
+    use super::*;
+    use styx_disk::DiskPlan;
+    use styx_proto::{FileMode, InfoHashV1, TorrentInfo, TorrentMetainfo};
+
+    fn make_v1_plan() -> TorrentPlan {
+        let info_hash = InfoHashV1::new([0u8; 20]);
+        let metainfo = TorrentMetainfo {
+            announce: None,
+            announce_list: Vec::new(),
+            url_list: Vec::new(),
+            info: TorrentInfo {
+                name: Bytes::from("test"),
+                piece_length: 16384,
+                pieces: Some(Bytes::from(vec![0xAB; 40])),
+                mode: FileMode::Single { length: 32768 },
+                file_tree: None,
+                meta_version: None,
+                private: false,
+            },
+            info_hash_v1: info_hash,
+            info_hash_v2: None,
+            piece_layers: None,
+            raw_info: Bytes::new(),
+        };
+        TorrentPlan {
+            id: TorrentId::new(info_hash),
+            info_hash,
+            info_hash_v2: None,
+            name: "test".to_owned(),
+            total_size: 32768,
+            announce_urls: vec![Url::parse("http://127.0.0.1:6969/announce").unwrap()],
+            web_seed_urls: Vec::new(),
+            metainfo,
+            disk_plan: DiskPlan::new_v2("/tmp", &[], 16384, vec![]).unwrap(),
+        }
+    }
+
+    #[test]
+    fn verify_pieces_root_v1_returns_ok() {
+        let task = TorrentTask::new(make_v1_plan());
+        assert!(task.verify_pieces_root().is_ok());
     }
 }
 

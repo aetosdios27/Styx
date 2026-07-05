@@ -266,7 +266,7 @@ impl RuntimeEngine {
         let (plan, mut events) = self.remove_torrent_intent(id)?;
         let total_size = plan.total_size;
         let mut task = TorrentTask::new(*plan);
-        task.set_status_complete();
+        task.set_status_complete()?;
         self.tasks.insert(id, task);
         events.push(RuntimeEvent::TorrentAdded { torrent: id });
         events.push(RuntimeEvent::ProgressUpdated {
