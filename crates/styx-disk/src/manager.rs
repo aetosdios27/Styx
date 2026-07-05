@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 
-use crate::merkle::verify_v2_piece_data;
+use crate::merkle::{verify_block_with_proof, verify_v2_piece_data};
 use crate::{
     block_specs_for_piece, verify_v1_piece, BlockSpec, DiskError, DiskPlan, DiskStore, PieceBuffer,
     PieceCompletion, PieceIndex, ResumeSummary, VerificationResult,
@@ -133,6 +133,32 @@ impl PieceManager {
         set_flag(&mut self.pending, piece, false)?;
         set_flag(&mut self.have, piece, true)?;
         Ok(VerificationResult::Verified { piece })
+    }
+
+    /// Verify a single 16 KiB block against a Merkle proof.
+    /// Returns true if the block produces the expected piece hash when
+    /// combined with the proof siblings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DiskError::V2PieceOutOfRange`] when the piece index is out
+    /// of the v2 hash array.
+    pub fn verify_block(
+        &self,
+        piece: PieceIndex,
+        block_index: u32,
+        block_data: &[u8],
+        proof: &[[u8; 32]],
+    ) -> Result<bool, DiskError> {
+        let plan = self.plan();
+        let piece_hash = plan
+            .piece_hashes_v2()
+            .get(piece.get() as usize)
+            .ok_or(DiskError::V2PieceOutOfRange {
+                piece: piece.get(),
+                max: plan.piece_count() - 1,
+            })?;
+        Ok(verify_block_with_proof(block_data, block_index, proof, piece_hash))
     }
 
     /// Return whether a piece has been verified.

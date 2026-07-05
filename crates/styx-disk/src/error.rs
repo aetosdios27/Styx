@@ -60,6 +60,14 @@ pub enum DiskError {
         /// Piece index that failed verification.
         piece: u32,
     },
+    /// Block-level Merkle verification failed.
+    #[error("block verification failed at block {block} of piece {piece}")]
+    BlockVerificationFailed {
+        /// Piece index containing the block.
+        piece: u32,
+        /// Block index within the piece.
+        block: u32,
+    },
     /// A piece index was outside the v2 piece hash array.
     #[error("piece index {piece} out of range for v2 (max {max})")]
     V2PieceOutOfRange {
@@ -125,6 +133,16 @@ impl PartialEq for DiskError {
                 Self::V2MerkleMismatch { piece: left_piece },
                 Self::V2MerkleMismatch { piece: right_piece },
             ) => left_piece == right_piece,
+            (
+                Self::BlockVerificationFailed {
+                    piece: left_piece,
+                    block: left_block,
+                },
+                Self::BlockVerificationFailed {
+                    piece: right_piece,
+                    block: right_block,
+                },
+            ) => left_piece == right_piece && left_block == right_block,
             (
                 Self::V2PieceOutOfRange {
                     piece: left_piece,
