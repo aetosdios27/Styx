@@ -37,7 +37,8 @@ pub use smoke::{
 };
 pub use snapshot::{PeerSnapshot, RuntimeEvent, RuntimeSnapshot, TorrentSnapshot, TorrentStatus};
 pub use source::{
-    SourceCandidate, SourceEndpoint, SourceFailure, SourceId, SourceKind, SourceState, SourceTable,
+    BlockCorruptionTracker, SourceCandidate, SourceEndpoint, SourceFailure, SourceId, SourceKind,
+    SourceState, SourceTable,
 };
 pub use task::TorrentTask;
 pub use torrent::{load_torrent_plan, TorrentId, TorrentPlan, TorrentSmokePlan};

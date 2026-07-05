@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::SocketAddr,
 };
 
@@ -210,6 +210,67 @@ impl SourceTable {
     }
 }
 
+/// Tracks block-level corruption at the (piece, block) granularity per peer.
+#[derive(Debug, Default)]
+pub struct BlockCorruptionTracker {
+    /// Track which peers sent bad data for which (piece, block)
+    bad_blocks: HashMap<(u32, u32), Vec<SocketAddr>>,
+    /// Peers that have been quarantined for block-level corruption
+    quarantined_peers: HashSet<SocketAddr>,
+    /// Number of block failures before a peer is quarantined
+    max_failures: usize,
+}
+
+impl BlockCorruptionTracker {
+    #[must_use]
+    pub fn new(max_failures: usize) -> Self {
+        Self {
+            max_failures,
+            ..Default::default()
+        }
+    }
+
+    /// Record that a peer sent corrupt data for a specific block.
+    /// Returns `true` if the peer should now be quarantined.
+    pub fn record_failure(&mut self, piece: u32, block: u32, peer: SocketAddr) -> bool {
+        self.bad_blocks.entry((piece, block)).or_default().push(peer);
+        let total = self
+            .bad_blocks
+            .values()
+            .filter(|v| v.contains(&peer))
+            .count();
+        if total >= self.max_failures {
+            self.quarantined_peers.insert(peer);
+            return true;
+        }
+        false
+    }
+
+    /// Whether a peer has been quarantined for block-level corruption.
+    #[must_use]
+    pub fn is_quarantined(&self, peer: &SocketAddr) -> bool {
+        self.quarantined_peers.contains(peer)
+    }
+
+    /// Peers that sent bad data for a specific block.
+    #[must_use]
+    pub fn bad_peers_for_block(&self, piece: u32, block: u32) -> &[SocketAddr] {
+        self.bad_blocks
+            .get(&(piece, block))
+            .map(|v| v.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// Peers that sent bad data for a specific block (owned copy).
+    #[must_use]
+    pub fn untrusted_peers_for_block(&self, piece: u32, block: u32) -> Vec<SocketAddr> {
+        self.bad_blocks
+            .get(&(piece, block))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
@@ -273,5 +334,24 @@ mod tests {
         let candidates = table.next_candidates(10);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].endpoint, SourceEndpoint::Peer(addr2));
+    }
+
+    #[test]
+    fn block_corruption_tracker_quarantines_peer_after_threshold() {
+        let mut tracker = BlockCorruptionTracker::new(2);
+        let peer_a = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 6881);
+        let peer_b = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 6881);
+
+        assert!(!tracker.record_failure(0, 1, peer_a));
+        assert!(!tracker.is_quarantined(&peer_a));
+        assert!(tracker.bad_peers_for_block(0, 1).contains(&peer_a));
+
+        assert!(tracker.record_failure(0, 2, peer_a));
+        assert!(tracker.is_quarantined(&peer_a));
+        assert!(!tracker.is_quarantined(&peer_b));
+
+        let untrusted = tracker.untrusted_peers_for_block(0, 1);
+        assert!(untrusted.contains(&peer_a));
+        assert!(tracker.bad_peers_for_block(0, 2).contains(&peer_a));
     }
 }
