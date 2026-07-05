@@ -3,9 +3,11 @@ use std::path::{Component, Path, PathBuf};
 use bytes::Bytes;
 use styx_proto::{FileMode, TorrentMetainfo};
 
+use crate::merkle::MERKLE_BLOCK_SIZE;
 use crate::{DiskError, PieceIndex};
 
 const SHA1_DIGEST_BYTES: usize = 20;
+const SHA256_DIGEST_BYTES: usize = 32;
 
 /// A storage plan derived from validated torrent metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -15,6 +17,9 @@ pub struct DiskPlan {
     piece_lengths: Vec<u32>,
     spans_by_piece: Vec<Vec<FileSpan>>,
     piece_hashes_v1: Vec<[u8; SHA1_DIGEST_BYTES]>,
+    piece_hashes_v2: Vec<[u8; SHA256_DIGEST_BYTES]>,
+    meta_version: Option<u32>,
+    blocks_per_piece: u32,
 }
 
 impl DiskPlan {
@@ -111,6 +116,87 @@ impl DiskPlan {
             piece_lengths,
             spans_by_piece,
             piece_hashes_v1,
+            piece_hashes_v2: Vec::new(),
+            meta_version: None,
+            blocks_per_piece: 0,
+        })
+    }
+
+    /// Build a v2 disk plan from flattened v2 file tree entries and piece hashes.
+    ///
+    /// v2 pieces are file-aligned: each file starts at a piece boundary (BEP 52).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DiskError::InvalidPieceLength`] when the piece length is zero.
+    #[allow(dead_code)]
+    pub fn new_v2(
+        root: impl AsRef<Path>,
+        v2_files: &[styx_proto::V2FlatFile],
+        piece_length: u32,
+        piece_hashes_v2: Vec<[u8; SHA256_DIGEST_BYTES]>,
+    ) -> Result<Self, DiskError> {
+        let root = root.as_ref().to_path_buf();
+        if piece_length == 0 {
+            return Err(DiskError::InvalidPieceLength);
+        }
+        if !piece_length.is_multiple_of(MERKLE_BLOCK_SIZE) {
+            return Err(DiskError::InvalidPieceLength);
+        }
+        let blocks_per_piece = piece_length / MERKLE_BLOCK_SIZE;
+
+        let mut files = Vec::new();
+        let mut torrent_offset = 0u64;
+        for vf in v2_files {
+            let mut path = root.clone();
+            for component in &vf.path_components {
+                let name = path_component_from_bytes(&Bytes::copy_from_slice(component))?;
+                path.push(name);
+            }
+            ensure_relative_target(&root, &path)?;
+            files.push(FileEntry {
+                path,
+                torrent_offset,
+                length: vf.entry.length,
+            });
+            let total_pieces = vf.entry.length.div_ceil(u64::from(piece_length));
+            torrent_offset = torrent_offset
+                .checked_add(total_pieces * u64::from(piece_length))
+                .ok_or(DiskError::IntegerOverflow)?;
+        }
+
+        for file in &files {
+            ensure_relative_target(&root, file.path())?;
+        }
+
+        let total_length: u64 = files.iter().map(|f| f.length).sum();
+        let mut spans_by_piece = Vec::new();
+        let mut piece_lengths = Vec::new();
+        for piece_idx in 0..piece_hashes_v2.len() {
+            let piece_start = u64::try_from(piece_idx)
+                .ok()
+                .and_then(|i| i.checked_mul(u64::from(piece_length)))
+                .ok_or(DiskError::IntegerOverflow)?;
+            let remaining = total_length
+                .checked_sub(piece_start)
+                .ok_or(DiskError::IntegerOverflow)?;
+            let piece_len = remaining.min(u64::from(piece_length));
+            let current_piece_length =
+                u32::try_from(piece_len).map_err(|_| DiskError::IntegerOverflow)?;
+            let file_spans = spans_for_range(&files, piece_start, current_piece_length)?;
+            piece_lengths.push(current_piece_length);
+            spans_by_piece.push(file_spans);
+        }
+
+        Ok(Self {
+            root,
+            files,
+            piece_lengths,
+            spans_by_piece,
+            piece_hashes_v1: Vec::new(),
+            piece_hashes_v2,
+            meta_version: Some(2),
+            blocks_per_piece,
         })
     }
 

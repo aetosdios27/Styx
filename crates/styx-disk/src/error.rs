@@ -54,6 +54,20 @@ pub enum DiskError {
     /// Checked integer arithmetic overflowed.
     #[error("integer overflow")]
     IntegerOverflow,
+    /// v2 Merkle tree verification failed for a piece.
+    #[error("v2 Merkle tree verification failed for piece {piece}")]
+    V2MerkleMismatch {
+        /// Piece index that failed verification.
+        piece: u32,
+    },
+    /// A piece index was outside the v2 piece hash array.
+    #[error("piece index {piece} out of range for v2 (max {max})")]
+    V2PieceOutOfRange {
+        /// Requested piece index.
+        piece: u32,
+        /// Maximum valid piece index.
+        max: u32,
+    },
     /// Disk IO failed.
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -107,6 +121,20 @@ impl PartialEq for DiskError {
                     piece_length: right_piece_length,
                 },
             ) => left_offset == right_offset && left_piece_length == right_piece_length,
+            (
+                Self::V2MerkleMismatch { piece: left_piece },
+                Self::V2MerkleMismatch { piece: right_piece },
+            ) => left_piece == right_piece,
+            (
+                Self::V2PieceOutOfRange {
+                    piece: left_piece,
+                    max: left_max,
+                },
+                Self::V2PieceOutOfRange {
+                    piece: right_piece,
+                    max: right_max,
+                },
+            ) => left_piece == right_piece && left_max == right_max,
             (Self::Io(left), Self::Io(right)) => left.kind() == right.kind(),
             _ => false,
         }
