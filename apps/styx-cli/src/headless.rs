@@ -18,7 +18,7 @@ impl Default for HeadlessOptions {
 }
 
 pub fn run_headless_once<R, W>(
-    runtime: R,
+    mut runtime: R,
     mut writer: W,
     options: HeadlessOptions,
 ) -> Result<(), AppError>

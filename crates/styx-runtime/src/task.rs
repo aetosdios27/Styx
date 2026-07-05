@@ -1,11 +1,13 @@
+use std::time::{Duration, Instant};
+
 use bytes::Bytes;
 use styx_disk::{
     block_specs_for_piece, BlockSpec, PieceIndex, PieceManager, ResumeSummary, VerificationResult,
 };
 
 use crate::{
-    RuntimeError, RuntimeEvent, TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot,
-    TorrentStatus,
+    RateCounter, RuntimeError, RuntimeEvent, TorrentCommand, TorrentId, TorrentPlan,
+    TorrentSnapshot, TorrentStatus,
 };
 
 #[derive(Debug)]
@@ -15,6 +17,11 @@ pub struct TorrentTask {
     status: TorrentStatus,
     verified_bytes: u64,
     downloaded_bytes: u64,
+    down_rate: RateCounter,
+    up_rate: RateCounter,
+    last_rate_tick: Instant,
+    cached_down_rate: u64,
+    cached_up_rate: u64,
 }
 
 impl TorrentTask {
@@ -27,6 +34,11 @@ impl TorrentTask {
             status: TorrentStatus::Checking,
             verified_bytes: 0,
             downloaded_bytes: 0,
+            down_rate: RateCounter::new(Duration::from_secs(2)).expect("2s window is valid"),
+            up_rate: RateCounter::new(Duration::from_secs(2)).expect("2s window is valid"),
+            last_rate_tick: Instant::now(),
+            cached_down_rate: 0,
+            cached_up_rate: 0,
         }
     }
 
@@ -61,8 +73,10 @@ impl TorrentTask {
         blocks: Vec<(BlockSpec, Bytes)>,
     ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         let piece_bytes = u64::from(self.plan.piece_length(piece)?);
+        let now = Instant::now();
         for (block, payload) in blocks {
             self.downloaded_bytes = self.downloaded_bytes.saturating_add(payload.len() as u64);
+            self.down_rate.record(now, payload.len() as u64);
             self.pieces.accept_block(block, payload)?;
         }
         match self.pieces.verify_and_commit_piece(piece).await? {
@@ -198,12 +212,20 @@ impl TorrentTask {
     }
 
     #[must_use]
-    pub fn snapshot(&self) -> TorrentSnapshot {
+    pub fn snapshot(&mut self) -> TorrentSnapshot {
+        let now = Instant::now();
+        if now.duration_since(self.last_rate_tick) > Duration::from_millis(250) {
+            self.cached_down_rate = self.down_rate.bytes_per_second(now);
+            self.cached_up_rate = self.up_rate.bytes_per_second(now);
+            self.last_rate_tick = now;
+        }
         let mut snapshot =
             TorrentSnapshot::new(self.plan.id, self.plan.name.clone(), self.plan.total_size)
                 .with_verified_bytes(self.verified_bytes)
                 .with_downloaded_bytes(self.downloaded_bytes);
         snapshot.status = self.status;
+        snapshot.down_rate = self.cached_down_rate;
+        snapshot.up_rate = self.cached_up_rate;
         snapshot
     }
 

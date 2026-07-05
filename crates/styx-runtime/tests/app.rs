@@ -9,7 +9,7 @@ use styx_runtime::{AppRuntime, RuntimeConfig, RuntimeEngine};
 #[test]
 fn snapshot_converts_torrent_status_correctly() {
     let engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
-    let runtime = AppRuntime::new(engine);
+    let mut runtime = AppRuntime::new(engine);
     let app_snap = runtime.snapshot();
     assert_eq!(app_snap.totals.torrent_count, 0);
 }

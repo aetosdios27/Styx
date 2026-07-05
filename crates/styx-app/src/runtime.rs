@@ -12,7 +12,7 @@ use crate::{
 
 pub trait TorrentRuntime {
     fn apply(&mut self, command: ControlCommand) -> Result<CommandResponse, AppError>;
-    fn snapshot(&self) -> AppSnapshot;
+    fn snapshot(&mut self) -> AppSnapshot;
     fn tick(&mut self) -> Vec<AppEvent>;
 }
 
@@ -60,7 +60,7 @@ impl TorrentRuntime for MemoryRuntime {
         }
     }
 
-    fn snapshot(&self) -> AppSnapshot {
+    fn snapshot(&mut self) -> AppSnapshot {
         let torrents = self
             .torrents
             .values()

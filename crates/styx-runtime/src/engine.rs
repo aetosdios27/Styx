@@ -63,9 +63,9 @@ impl RuntimeEngine {
     }
 
     #[must_use]
-    pub fn snapshot(&self) -> RuntimeSnapshot {
+    pub fn snapshot(&mut self) -> RuntimeSnapshot {
         RuntimeSnapshot {
-            torrents: self.tasks.values().map(TorrentTask::snapshot).collect(),
+            torrents: self.tasks.values_mut().map(TorrentTask::snapshot).collect(),
             peers: Vec::new(),
             events: self.events.iter().cloned().collect(),
         }
