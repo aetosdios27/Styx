@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use bytes::Bytes;
 
 use crate::{
-    block_specs_for_piece, verify_v1_piece, BlockSpec, DiskError, DiskPlan, DiskStore, PieceBuffer,
-    PieceCompletion, PieceIndex, ResumeSummary, VerificationResult,
+    block_specs_for_piece, verify_v1_piece, verify_v2_piece_data, BlockSpec, DiskError, DiskPlan,
+    DiskStore, PieceBuffer, PieceCompletion, PieceIndex, ResumeSummary, VerificationResult,
 };
 
 /// Coordinates block assembly, verification, and durable piece commits.
@@ -88,7 +88,40 @@ impl PieceManager {
         };
         let bytes = buffer.piece_bytes()?;
 
+        if !self.plan().piece_hashes_v2().is_empty() {
+            return self.verify_and_commit_v2_piece(piece, bytes).await;
+        }
+
         if verify_v1_piece(self.plan(), piece, &bytes).is_err() {
+            self.buffers.remove(&piece.get());
+            set_flag(&mut self.pending, piece, false)?;
+            return Ok(VerificationResult::HashMismatch { piece });
+        }
+
+        self.store.commit_piece(piece, bytes).await?;
+        self.buffers.remove(&piece.get());
+        set_flag(&mut self.pending, piece, false)?;
+        set_flag(&mut self.have, piece, true)?;
+        Ok(VerificationResult::Verified { piece })
+    }
+
+    async fn verify_and_commit_v2_piece(
+        &mut self,
+        piece: PieceIndex,
+        bytes: Bytes,
+    ) -> Result<VerificationResult, DiskError> {
+        let piece_idx = piece.get() as usize;
+        let plan = self.plan();
+
+        let expected_hash =
+            plan.piece_hashes_v2()
+                .get(piece_idx)
+                .ok_or(DiskError::V2PieceOutOfRange {
+                    piece: piece.get(),
+                    max: plan.piece_count() - 1,
+                })?;
+
+        if !verify_v2_piece_data(&bytes, expected_hash, plan.blocks_per_piece()) {
             self.buffers.remove(&piece.get());
             set_flag(&mut self.pending, piece, false)?;
             return Ok(VerificationResult::HashMismatch { piece });

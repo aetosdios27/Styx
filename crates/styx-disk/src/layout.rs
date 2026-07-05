@@ -263,6 +263,18 @@ impl DiskPlan {
                 piece_count: self.piece_count(),
             })
     }
+
+    /// v2 piece hashes, one per piece in the torrent.
+    #[must_use]
+    pub fn piece_hashes_v2(&self) -> &[[u8; SHA256_DIGEST_BYTES]] {
+        &self.piece_hashes_v2
+    }
+
+    /// Number of 16 KiB Merkle blocks per piece.
+    #[must_use]
+    pub const fn blocks_per_piece(&self) -> u32 {
+        self.blocks_per_piece
+    }
 }
 
 /// A file in the torrent's output layout.
