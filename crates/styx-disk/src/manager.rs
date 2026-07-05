@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 
+use crate::merkle::verify_v2_piece_data;
 use crate::{
-    block_specs_for_piece, verify_v1_piece, verify_v2_piece_data, BlockSpec, DiskError, DiskPlan,
-    DiskStore, PieceBuffer, PieceCompletion, PieceIndex, ResumeSummary, VerificationResult,
+    block_specs_for_piece, verify_v1_piece, BlockSpec, DiskError, DiskPlan, DiskStore, PieceBuffer,
+    PieceCompletion, PieceIndex, ResumeSummary, VerificationResult,
 };
 
 /// Coordinates block assembly, verification, and durable piece commits.
@@ -149,34 +150,65 @@ impl PieceManager {
         self.have.iter().filter(|have| **have).count() as u32
     }
 
-    /// Placeholder for resume verification, implemented in Task 7.
+    /// Verify existing disk files and mark verified/failed pieces.
     ///
     /// # Errors
     ///
     /// Returns [`DiskError`] for unexpected IO or validation failures. Missing
     /// and corrupted pieces are counted in the returned summary.
     pub async fn resume_verify(&mut self) -> Result<ResumeSummary, DiskError> {
+        let (is_v2, count, v2_hashes, blocks_per_piece) = {
+            let plan = self.plan();
+            let is_v2 = !plan.piece_hashes_v2().is_empty();
+            let count = plan.piece_count();
+            let v2_hashes: Vec<[u8; 32]> = if is_v2 {
+                plan.piece_hashes_v2().to_vec()
+            } else {
+                Vec::new()
+            };
+            let blocks_per_piece = plan.blocks_per_piece();
+            (is_v2, count, v2_hashes, blocks_per_piece)
+        };
+        self.resume_verify_inner(count, is_v2, v2_hashes, blocks_per_piece)
+            .await
+    }
+
+    async fn resume_verify_inner(
+        &mut self,
+        piece_count: u32,
+        is_v2: bool,
+        v2_hashes: Vec<[u8; 32]>,
+        blocks_per_piece: u32,
+    ) -> Result<ResumeSummary, DiskError> {
         let mut summary = ResumeSummary::default();
-        for raw_piece in 0..self.plan().piece_count() {
+        for raw_piece in 0..piece_count {
             let piece = PieceIndex::new(raw_piece);
             match self.store.read_piece(piece).await {
-                Ok(bytes) => match verify_v1_piece(self.plan(), piece, &bytes) {
-                    Ok(()) => {
-                        set_flag(&mut self.have, piece, true)?;
-                        summary.verified = summary
-                            .verified
-                            .checked_add(1)
-                            .ok_or(DiskError::IntegerOverflow)?;
+                Ok(bytes) => {
+                    let result = if is_v2 {
+                        verify_v2_resume_piece(&bytes, &v2_hashes, piece, blocks_per_piece)
+                    } else {
+                        let plan = self.plan();
+                        verify_v1_piece(plan, piece, &bytes).map(|_| ())
+                    };
+                    match result {
+                        Ok(()) => {
+                            set_flag(&mut self.have, piece, true)?;
+                            summary.verified = summary
+                                .verified
+                                .checked_add(1)
+                                .ok_or(DiskError::IntegerOverflow)?;
+                        }
+                        Err(DiskError::HashMismatch) | Err(DiskError::V2MerkleMismatch { .. }) => {
+                            set_flag(&mut self.have, piece, false)?;
+                            summary.failed = summary
+                                .failed
+                                .checked_add(1)
+                                .ok_or(DiskError::IntegerOverflow)?;
+                        }
+                        Err(err) => return Err(err),
                     }
-                    Err(DiskError::HashMismatch) => {
-                        set_flag(&mut self.have, piece, false)?;
-                        summary.failed = summary
-                            .failed
-                            .checked_add(1)
-                            .ok_or(DiskError::IntegerOverflow)?;
-                    }
-                    Err(err) => return Err(err),
-                },
+                }
                 Err(DiskError::Io(err))
                     if matches!(
                         err.kind(),
@@ -193,6 +225,24 @@ impl PieceManager {
             }
         }
         Ok(summary)
+    }
+}
+
+fn verify_v2_resume_piece(
+    bytes: &[u8],
+    v2_hashes: &[[u8; 32]],
+    piece: PieceIndex,
+    blocks_per_piece: u32,
+) -> Result<(), DiskError> {
+    let idx = piece.get() as usize;
+    let expected = v2_hashes.get(idx).ok_or(DiskError::V2PieceOutOfRange {
+        piece: piece.get(),
+        max: v2_hashes.len() as u32 - 1,
+    })?;
+    if verify_v2_piece_data(bytes, expected, blocks_per_piece) {
+        Ok(())
+    } else {
+        Err(DiskError::V2MerkleMismatch { piece: piece.get() })
     }
 }
 
