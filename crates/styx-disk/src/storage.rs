@@ -321,6 +321,8 @@ mod tests {
                 pieces: Some(Bytes::from(vec![0_u8; 20])),
                 private: false,
                 mode: FileMode::Single { length: 5 },
+                meta_version: None,
+                file_tree: None,
             },
         );
         let store = DiskStore::new(plan);
@@ -362,6 +364,8 @@ mod tests {
                         },
                     ],
                 },
+                meta_version: None,
+                file_tree: None,
             },
         );
         let store = DiskStore::new(plan);
@@ -397,6 +401,7 @@ mod tests {
             info,
             info_hash_v1: InfoHashV1::new([0; 20]),
             info_hash_v2: None,
+            piece_layers: None,
             raw_info: Bytes::new(),
         };
         DiskPlan::from_metainfo(&meta, root).unwrap()

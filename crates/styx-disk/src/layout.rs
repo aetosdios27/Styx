@@ -352,6 +352,8 @@ mod tests {
             pieces: Some(Bytes::from(vec![0_u8; 20 * 3])),
             private: false,
             mode: FileMode::Single { length: 40 * 1024 },
+            meta_version: None,
+            file_tree: None,
         });
 
         let plan = DiskPlan::from_metainfo(&meta, "/downloads").unwrap();
@@ -389,6 +391,8 @@ mod tests {
                     },
                 ],
             },
+            meta_version: None,
+            file_tree: None,
         });
 
         let plan = DiskPlan::from_metainfo(&meta, "/downloads").unwrap();
@@ -429,6 +433,8 @@ mod tests {
             pieces: Some(Bytes::from(vec![0_u8; 20])),
             private: false,
             mode: FileMode::Single { length: 1 },
+            meta_version: None,
+            file_tree: None,
         });
 
         let err = DiskPlan::from_metainfo(&meta, "/downloads").unwrap_err();
@@ -444,6 +450,8 @@ mod tests {
             pieces: Some(Bytes::from(vec![0_u8; 20])),
             private: false,
             mode: FileMode::Single { length: 40 * 1024 },
+            meta_version: None,
+            file_tree: None,
         });
 
         let err = DiskPlan::from_metainfo(&meta, "/downloads").unwrap_err();
@@ -465,6 +473,8 @@ mod tests {
             pieces: Some(Bytes::from(vec![0_u8; 21])),
             private: false,
             mode: FileMode::Single { length: 1 },
+            meta_version: None,
+            file_tree: None,
         });
 
         let err = DiskPlan::from_metainfo(&meta, "/downloads").unwrap_err();
@@ -486,6 +496,8 @@ mod tests {
             pieces: Some(Bytes::from(vec![0_u8; 20])),
             private: false,
             mode: FileMode::Single { length: 1 },
+            meta_version: None,
+            file_tree: None,
         });
 
         let err = DiskPlan::from_metainfo(&meta, "/downloads").unwrap_err();
@@ -524,6 +536,7 @@ mod tests {
             info,
             info_hash_v1: InfoHashV1::new([0; 20]),
             info_hash_v2: None,
+            piece_layers: None,
             raw_info: Bytes::new(),
         }
     }

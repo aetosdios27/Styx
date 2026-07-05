@@ -5,11 +5,13 @@
 //! v1 metainfo parsing plus peer-wire handshake and message framing.
 
 pub mod bencode;
+pub mod file_tree;
 pub mod info_hash_v2;
 pub mod metainfo;
 pub mod peer;
 
 pub use bencode::{decode, decode_with_span, encode, BencodeError, BencodeValue, DecodedBencode};
+pub use file_tree::{FileTreeError, V2FileEntry, V2FileTree, V2FileTreeNode, V2FlatFile};
 pub use info_hash_v2::{InfoHashV2, SHA256_DIGEST_BYTES};
 pub use metainfo::{
     decode_torrent, FileMode, InfoHashV1, TorrentFile, TorrentInfo, TorrentMetainfo,

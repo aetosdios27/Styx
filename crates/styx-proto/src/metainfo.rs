@@ -46,6 +46,8 @@ pub struct TorrentMetainfo {
     /// SHA-256 hash of the exact bencoded `info` dictionary bytes (BEP 52).
     /// Always computed for every torrent, regardless of v1/v2.
     pub info_hash_v2: Option<InfoHashV2>,
+    /// BEP 52 piece layers: maps pieces_root → per-piece Merkle root hashes.
+    pub piece_layers: Option<BTreeMap<InfoHashV2, Vec<u8>>>,
     /// Exact bencoded `info` dictionary bytes from the source file.
     pub raw_info: Bytes,
 }
@@ -64,6 +66,10 @@ pub struct TorrentInfo {
     pub private: bool,
     /// Single-file or multi-file layout.
     pub mode: FileMode,
+    /// BEP 52 meta version. `Some(2)` for v2/hybrid, `None` for v1.
+    pub meta_version: Option<u32>,
+    /// BEP 52 file tree (v2/hybrid only).
+    pub file_tree: Option<crate::file_tree::V2FileTree>,
 }
 
 /// File layout stored in the v1 info dictionary.
@@ -142,6 +148,9 @@ pub enum TorrentMetainfoError {
     /// A multi-file path component would be unsafe to map onto disk.
     #[error("file path component is unsafe")]
     UnsafePathComponent,
+    /// The BEP 52 file tree could not be parsed.
+    #[error("invalid v2 file tree")]
+    InvalidFileTree,
 }
 
 /// Decode a v1 `.torrent` metainfo document.
@@ -164,6 +173,7 @@ pub fn decode_torrent(input: &[u8]) -> Result<TorrentMetainfo, TorrentMetainfoEr
     let raw_info = raw_slice(input, info_entry.value_span.clone());
     let info_hash_v1 = sha1_digest(&raw_info);
     let info_hash_v2 = Some(sha256_digest(&raw_info));
+    let piece_layers = parse_piece_layers(&entries);
 
     Ok(TorrentMetainfo {
         announce,
@@ -172,8 +182,40 @@ pub fn decode_torrent(input: &[u8]) -> Result<TorrentMetainfo, TorrentMetainfoEr
         info,
         info_hash_v1,
         info_hash_v2,
+        piece_layers,
         raw_info,
     })
+}
+
+fn parse_piece_layers(
+    entries: &[crate::bencode::SpannedDictEntry],
+) -> Option<BTreeMap<InfoHashV2, Vec<u8>>> {
+    let value = entries
+        .iter()
+        .find(|e| e.key == b"piece layers")?
+        .value
+        .clone();
+    let dict = match &value {
+        BencodeValue::Dict(d) => d,
+        _ => return None,
+    };
+    Some(
+        dict.iter()
+            .filter_map(|(key, value)| {
+                if key.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(key);
+                    let hash = InfoHashV2::new(arr);
+                    match value {
+                        BencodeValue::Bytes(b) => Some((hash, b.clone().to_vec())),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect(),
+    )
 }
 
 fn optional_url_list(
@@ -250,9 +292,16 @@ fn parse_info(value: &BencodeValue) -> Result<TorrentInfo, TorrentMetainfoError>
     let private = optional_boolish_int(dict, b"private", "info")?.unwrap_or(false);
     let length = optional_non_negative_u64(dict, b"length", "info")?;
     let files = optional_files(dict)?;
-    let mode = match (length, files) {
-        (Some(length), None) => FileMode::Single { length },
-        (None, Some(files)) => FileMode::Multi { files },
+    let meta_version = parse_meta_version(dict);
+    let file_tree = if meta_version == Some(2) {
+        parse_file_tree(dict)?
+    } else {
+        None
+    };
+    let mode = match (length, files, meta_version) {
+        (Some(length), None, _) => FileMode::Single { length },
+        (None, Some(files), _) => FileMode::Multi { files },
+        (None, None, Some(2)) => FileMode::Single { length: 0 },
         _ => return Err(TorrentMetainfoError::InvalidFileMode),
     };
 
@@ -262,7 +311,29 @@ fn parse_info(value: &BencodeValue) -> Result<TorrentInfo, TorrentMetainfoError>
         pieces,
         private,
         mode,
+        meta_version,
+        file_tree,
     })
+}
+
+fn parse_meta_version(dict: &BTreeMap<Vec<u8>, BencodeValue>) -> Option<u32> {
+    dict.get(b"meta version".as_slice()).and_then(|v| match v {
+        BencodeValue::Integer(i) => Some(*i as u32),
+        _ => None,
+    })
+}
+
+fn parse_file_tree(
+    dict: &BTreeMap<Vec<u8>, BencodeValue>,
+) -> Result<Option<crate::file_tree::V2FileTree>, TorrentMetainfoError> {
+    match dict.get(b"file tree".as_slice()) {
+        Some(value) => {
+            let ft = crate::file_tree::V2FileTree::from_bencode(value)
+                .map_err(|_| TorrentMetainfoError::InvalidFileTree)?;
+            Ok(Some(ft))
+        }
+        None => Ok(None),
+    }
 }
 
 fn optional_files(
@@ -631,6 +702,20 @@ mod tests {
                 ]
             }
         );
+    }
+
+    #[test]
+    fn parse_v2_file_tree_single_file() {
+        let pieces_root = [b'a'; 32];
+        let mut buf = b"d4:testd0:d6:lengthi1024e11:pieces root32:".to_vec();
+        buf.extend_from_slice(&pieces_root);
+        buf.extend_from_slice(b"eee");
+        let parsed = crate::bencode::decode(&buf).unwrap();
+        let ft = crate::file_tree::V2FileTree::from_bencode(&parsed).unwrap();
+        let files = ft.flatten().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path_components, vec![b"test".to_vec()]);
+        assert_eq!(files[0].entry.length, 1024);
     }
 
     #[test]
