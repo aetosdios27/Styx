@@ -124,7 +124,11 @@ async fn broken_tracker_never_responds_times_out() {
 
     let result = client.announce(&url, &request).await;
 
-    assert!(result.is_err(), "expected error for dropped connection, got {:?}", result);
+    assert!(
+        result.is_err(),
+        "expected error for dropped connection, got {:?}",
+        result
+    );
 
     handle.await.unwrap();
 }
