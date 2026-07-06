@@ -8,6 +8,8 @@ use styx_disk::{
 };
 use styx_proto::PeerId;
 
+use styx_tracker::HttpTrackerClient;
+
 use crate::{
     peer_table::PeerTable, RateCounter, RuntimeConfig, RuntimeError, RuntimeEvent, SourceEndpoint,
     SourceFailure, SourceId, SourceTable, TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot,
@@ -15,7 +17,6 @@ use crate::{
 };
 
 #[derive(Debug)]
-#[expect(dead_code)] // last_announce, announce_interval used in Task 5 tracker re-announce
 pub struct TorrentTask {
     plan: TorrentPlan,
     pieces: PieceManager,
@@ -31,6 +32,7 @@ pub struct TorrentTask {
     peers: PeerTable,
     sources: SourceTable,
     peer_id: PeerId,
+    tracker: HttpTrackerClient,
     pending_verify: Vec<PieceIndex>,
     last_announce: Option<Instant>,
     announce_interval: Duration,
@@ -67,6 +69,7 @@ impl TorrentTask {
             peer_id: PeerId::new([0u8; 20]),
             last_announce: None,
             announce_interval: Duration::from_secs(1800),
+            tracker: HttpTrackerClient::new(512 * 1024),
             pending_verify: Vec::new(),
         }
     }
@@ -113,6 +116,7 @@ impl TorrentTask {
             peer_id,
             last_announce: None,
             announce_interval: Duration::from_secs(1800),
+            tracker: HttpTrackerClient::new(512 * 1024),
             pending_verify: Vec::new(),
         })
     }
@@ -145,6 +149,51 @@ impl TorrentTask {
     pub async fn discover_and_connect_peers(&mut self) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         let mut events = Vec::new();
 
+        // Re-announce to tracker if interval elapsed
+        let now = Instant::now();
+        let needs_peers = self.peers.connected_count() == 0;
+        let has_trackers = !self.plan.announce_urls.is_empty();
+        let should_announce = has_trackers && match self.last_announce {
+            Some(last) if !needs_peers => now.duration_since(last) >= self.announce_interval / 2,
+            Some(last) => now.duration_since(last) >= Duration::from_secs(5),
+            None => true,
+        };
+
+        if should_announce {
+            let request = crate::tracker::build_plan_announce_request(
+                &self.plan,
+                self.peer_id,
+                self.verified_bytes,
+                50,
+            );
+            for url in &self.plan.announce_urls {
+                match self.tracker.announce(url, &request).await {
+                    Ok(response) => {
+                        self.announce_interval =
+                            Duration::from_secs(u64::from(response.interval));
+                        for peer in &response.peers {
+                            if peer.addr.port() == 0 || peer.addr.ip().is_unspecified() {
+                                continue;
+                            }
+                            let _ = self.sources.add_candidate(
+                                SourceEndpoint::Peer(peer.addr),
+                                crate::SourceKind::Peer,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        events.push(RuntimeEvent::SourceFailed {
+                            torrent: self.plan.id,
+                            source: url.to_string(),
+                            reason: e.to_string(),
+                        });
+                    }
+                }
+            }
+            self.last_announce = Some(now);
+        }
+
+        // Connect fresh peers from SourceTable
         for candidate in self.sources.next_candidates(usize::MAX) {
             let SourceEndpoint::Peer(addr) = candidate.endpoint else {
                 continue;
@@ -510,7 +559,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     use tokio::net::TcpListener;
-    use url::Url;
+
 
     use super::*;
     use crate::{SourceKind, SourceState};
@@ -522,8 +571,11 @@ mod tests {
         DEFAULT_MAX_PEER_FRAME_LEN,
     };
 
-    fn make_v1_plan() -> TorrentPlan {
-        let info_hash = InfoHashV1::new([0u8; 20]);
+    const TEST_INFO_HASH: [u8; 20] = [0u8; 20];
+    const VERIFIABLE_INFO_HASH: [u8; 20] = [1u8; 20];
+
+    fn make_test_plan(info_hash_bytes: [u8; 20], total_size: u64, pieces: Vec<u8>) -> TorrentPlan {
+        let info_hash = InfoHashV1::new(info_hash_bytes);
         let metainfo = TorrentMetainfo {
             announce: None,
             announce_list: Vec::new(),
@@ -531,8 +583,8 @@ mod tests {
             info: TorrentInfo {
                 name: Bytes::from("test"),
                 piece_length: 16384,
-                pieces: Some(Bytes::from(vec![0xAB; 40])),
-                mode: FileMode::Single { length: 32768 },
+                pieces: Some(Bytes::from(pieces)),
+                mode: FileMode::Single { length: total_size },
                 file_tree: None,
                 meta_version: None,
                 private: false,
@@ -547,50 +599,22 @@ mod tests {
             info_hash,
             info_hash_v2: None,
             name: "test".to_owned(),
-            total_size: 32768,
-            announce_urls: vec![Url::parse("http://127.0.0.1:6969/announce").unwrap()],
+            total_size,
+            announce_urls: Vec::new(),
             web_seed_urls: Vec::new(),
             disk_plan: DiskPlan::from_metainfo(&metainfo, "/tmp").unwrap(),
             metainfo,
         }
     }
 
-    /// Create a TorrentPlan with a single 16384-byte piece whose data is known
-    /// so piece verification will succeed with matching block data.
+    fn make_v1_plan() -> TorrentPlan {
+        make_test_plan(TEST_INFO_HASH, 32768, vec![0xAB; 40])
+    }
+
     fn make_verifiable_plan() -> TorrentPlan {
         let piece_data = [0x42u8; 16384];
         let hash: [u8; 20] = Sha1::digest(piece_data).into();
-        let pieces_bytes: Vec<u8> = hash.to_vec();
-        let info_hash = InfoHashV1::new([1u8; 20]);
-        let metainfo = TorrentMetainfo {
-            announce: None,
-            announce_list: Vec::new(),
-            url_list: Vec::new(),
-            info: TorrentInfo {
-                name: Bytes::from("test"),
-                piece_length: 16384,
-                pieces: Some(Bytes::from(pieces_bytes)),
-                mode: FileMode::Single { length: 16384 },
-                file_tree: None,
-                meta_version: None,
-                private: false,
-            },
-            info_hash_v1: info_hash,
-            info_hash_v2: None,
-            piece_layers: None,
-            raw_info: Bytes::new(),
-        };
-        TorrentPlan {
-            id: TorrentId::new(info_hash),
-            info_hash,
-            info_hash_v2: None,
-            name: "test".to_owned(),
-            total_size: 16384,
-            announce_urls: vec![Url::parse("http://127.0.0.1:6969/announce").unwrap()],
-            web_seed_urls: Vec::new(),
-            disk_plan: DiskPlan::from_metainfo(&metainfo, "/tmp").unwrap(),
-            metainfo,
-        }
+        make_test_plan(VERIFIABLE_INFO_HASH, 16384, hash.to_vec())
     }
 
     fn make_config() -> RuntimeConfig {
