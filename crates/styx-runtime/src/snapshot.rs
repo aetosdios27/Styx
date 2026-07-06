@@ -88,6 +88,10 @@ pub enum RuntimeEvent {
         torrent: TorrentId,
         addr: std::net::SocketAddr,
     },
+    PeerDisconnected {
+        torrent: TorrentId,
+        addr: std::net::SocketAddr,
+    },
     IntentDeclared {
         torrent: Option<TorrentId>,
         kind: &'static str,
@@ -174,6 +178,7 @@ impl RuntimeEvent {
             Self::TaskFailed { .. } => "task_failed",
             Self::TaskCompleted { .. } => "task_completed",
             Self::PeerConnected { .. } => "peer_connected",
+            Self::PeerDisconnected { .. } => "peer_disconnected",
             Self::IntentDeclared { .. } => "intent_declared",
             Self::ValidationStarted => "validation_started",
             Self::ValidationFailed { .. } => "validation_failed",

@@ -7,6 +7,7 @@ use styx_proto::{
 };
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -85,8 +86,15 @@ impl PeerIo {
 
     pub fn drain(&mut self) -> Vec<PeerMessage> {
         let mut messages = Vec::new();
-        while let Ok(msg) = self.message_rx.try_recv() {
-            messages.push(msg);
+        loop {
+            match self.message_rx.try_recv() {
+                Ok(msg) => messages.push(msg),
+                Err(TryRecvError::Disconnected) => {
+                    self.disconnected = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+            }
         }
         messages
     }

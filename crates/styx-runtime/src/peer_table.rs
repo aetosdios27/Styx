@@ -14,6 +14,8 @@ struct ActivePeer {
     io: PeerIo,
 }
 
+type DrainResult = (Vec<(PeerKey, PeerMessage)>, Vec<(PeerKey, SocketAddr)>);
+
 #[derive(Debug)]
 pub(crate) struct PeerTable {
     by_key: BTreeMap<PeerKey, ActivePeer>,
@@ -69,14 +71,24 @@ impl PeerTable {
         }
     }
 
-    pub fn drain_messages(&mut self) -> Vec<(PeerKey, PeerMessage)> {
+    pub fn drain_messages(&mut self) -> DrainResult {
         let mut all = Vec::new();
         for peer in self.by_key.values_mut() {
             for msg in peer.io.drain() {
                 all.push((peer.key, msg));
             }
         }
-        all
+        let dead: Vec<(PeerKey, SocketAddr)> = self
+            .by_key
+            .values()
+            .filter(|p| p.io.is_disconnected())
+            .map(|p| (p.key, p.addr))
+            .collect();
+        let dead_keys: Vec<PeerKey> = dead.iter().map(|(k, _)| *k).collect();
+        for key in dead_keys {
+            self.remove_peer(key);
+        }
+        (all, dead)
     }
 
     pub fn send_message(&self, key: PeerKey, msg: PeerMessage) -> Result<(), ()> {
@@ -211,7 +223,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let messages = table.drain_messages();
+        let (messages, _dead) = table.drain_messages();
         assert!(
             messages
                 .iter()
