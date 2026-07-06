@@ -1,5 +1,5 @@
-use std::time::Duration;
 use bytes::Bytes;
+use std::time::Duration;
 use styx_disk::{BlockLength, BlockOffset, BlockSpec, PieceIndex};
 use styx_proto::{
     ExtensionBits, Handshake, InfoHashV1, PeerId, PeerMessage, DEFAULT_MAX_PEER_FRAME_LEN,

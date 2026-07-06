@@ -79,9 +79,7 @@ async fn disk_pressure_permission_denied_fails_commit_on_verify() {
         .verify_and_commit_piece(PieceIndex::new(0))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, DiskError::Io(ref e) if e.kind() == io::ErrorKind::PermissionDenied)
-    );
+    assert!(matches!(err, DiskError::Io(ref e) if e.kind() == io::ErrorKind::PermissionDenied));
     assert!(harness.is_poisoned());
 }
 
@@ -99,9 +97,7 @@ async fn disk_pressure_readonly_fails_commit_on_verify() {
         .verify_and_commit_piece(PieceIndex::new(0))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, DiskError::Io(ref e) if e.kind() == io::ErrorKind::ReadOnlyFilesystem)
-    );
+    assert!(matches!(err, DiskError::Io(ref e) if e.kind() == io::ErrorKind::ReadOnlyFilesystem));
     assert!(harness.is_poisoned());
 }
 

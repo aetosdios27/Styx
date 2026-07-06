@@ -74,11 +74,8 @@ impl LargeTorrentConfig {
             BencodeValue::Integer(piece_size as i64),
         );
 
-        let v1_hashes = compute_v1_hashes_streaming(
-            self.total_size,
-            piece_size as usize,
-            num_pieces,
-        );
+        let v1_hashes =
+            compute_v1_hashes_streaming(self.total_size, piece_size as usize, num_pieces);
         info.insert(
             b"pieces".to_vec(),
             BencodeValue::Bytes(Bytes::from(v1_hashes)),
@@ -110,7 +107,8 @@ impl LargeTorrentConfig {
             BencodeValue::Bytes(Bytes::copy_from_slice(&pieces_root)),
         );
 
-        let file_tree = build_file_tree_streaming(self.total_size, self.file_count, piece_size as usize);
+        let file_tree =
+            build_file_tree_streaming(self.total_size, self.file_count, piece_size as usize);
         info.insert(b"file tree".to_vec(), file_tree);
 
         BencodeValue::Dict(info)
@@ -127,11 +125,8 @@ impl LargeTorrentConfig {
             BencodeValue::Integer(piece_size as i64),
         );
 
-        let v1_hashes = compute_v1_hashes_streaming(
-            self.total_size,
-            piece_size as usize,
-            num_pieces,
-        );
+        let v1_hashes =
+            compute_v1_hashes_streaming(self.total_size, piece_size as usize, num_pieces);
         info.insert(
             b"pieces".to_vec(),
             BencodeValue::Bytes(Bytes::from(v1_hashes)),
@@ -150,7 +145,8 @@ impl LargeTorrentConfig {
             BencodeValue::Bytes(Bytes::copy_from_slice(&pieces_root)),
         );
 
-        let file_tree = build_file_tree_streaming(self.total_size, self.file_count, piece_size as usize);
+        let file_tree =
+            build_file_tree_streaming(self.total_size, self.file_count, piece_size as usize);
         info.insert(b"file tree".to_vec(), file_tree);
 
         BencodeValue::Dict(info)
@@ -448,10 +444,7 @@ fn build_file_tree_streaming(total_size: u64, file_count: u32, piece_size: usize
         };
         let pieces_root = compute_merkle_root_streaming(size, piece_size);
         let mut entry = BTreeMap::new();
-        entry.insert(
-            b"length".to_vec(),
-            BencodeValue::Integer(size as i64),
-        );
+        entry.insert(b"length".to_vec(), BencodeValue::Integer(size as i64));
         entry.insert(
             b"pieces root".to_vec(),
             BencodeValue::Bytes(Bytes::copy_from_slice(&pieces_root)),

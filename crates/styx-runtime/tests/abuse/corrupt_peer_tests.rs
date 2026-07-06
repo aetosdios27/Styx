@@ -1,5 +1,5 @@
-use std::time::Duration;
 use bytes::Bytes;
+use std::time::Duration;
 use styx_disk::{BlockLength, BlockOffset, BlockSpec, PieceIndex};
 use styx_proto::{
     ExtensionBits, Handshake, InfoHashV1, PeerId, PeerMessage, PeerWireError,
@@ -59,7 +59,10 @@ async fn corrupt_peer_bit_flipped_piece_returns_error() {
     .unwrap_err();
 
     assert!(
-        matches!(err, RuntimeError::PeerWire(PeerWireError::FrameTooLarge { .. })),
+        matches!(
+            err,
+            RuntimeError::PeerWire(PeerWireError::FrameTooLarge { .. })
+        ),
         "expected FrameTooLarge, got {err:?}"
     );
     peer_handle.abort();
@@ -113,7 +116,12 @@ async fn corrupt_peer_wrong_index_in_piece_returns_error() {
     .unwrap_err();
 
     assert!(
-        matches!(err, RuntimeError::UnexpectedPeerMessage { stage: "waiting_for_piece_block" }),
+        matches!(
+            err,
+            RuntimeError::UnexpectedPeerMessage {
+                stage: "waiting_for_piece_block"
+            }
+        ),
         "expected UnexpectedPeerMessage, got {err:?}"
     );
     peer_handle.abort();

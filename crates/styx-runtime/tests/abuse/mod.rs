@@ -1,3 +1,5 @@
+mod bad_web_seed_tests;
+mod broken_tracker_tests;
 mod corrupt_peer_tests;
 mod large_torrent;
 mod large_torrent_tests;

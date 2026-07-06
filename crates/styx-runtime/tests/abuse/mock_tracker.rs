@@ -35,7 +35,10 @@ impl MockTracker {
             if let Ok((mut stream, _)) = listener.accept().await {
                 match self.behavior {
                     MockTrackerBehavior::NeverResponds => {
-                        let _ = tokio::time::sleep(Duration::from_secs(60)).await;
+                        // Accept the connection and drop it immediately.
+                        // The HTTP client sees a clean TCP close before any
+                        // response bytes arrive, which triggers an IO error
+                        // or timeout on its side.
                     }
                     _ => {
                         let mut buf = [0u8; 4096];
