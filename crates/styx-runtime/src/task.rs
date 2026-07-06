@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use styx_core::{PeerConnectionManager, TorrentState};
+use styx_core::{PeerAction, PeerConnectionManager, TorrentState};
 use styx_disk::{
     block_specs_for_piece, BlockSpec, PieceIndex, PieceManager, ResumeSummary, VerificationResult,
 };
@@ -14,6 +14,7 @@ use crate::{
 };
 
 #[derive(Debug)]
+#[expect(dead_code)] // last_announce, announce_interval used in Task 5 tracker re-announce
 pub struct TorrentTask {
     plan: TorrentPlan,
     pieces: PieceManager,
@@ -75,7 +76,7 @@ impl TorrentTask {
         let block_length = 16384_u32;
 
         let torrent = TorrentState::new(piece_count, standard_piece_length, block_length);
-        let manager = PeerConnectionManager::new(config.peer.clone(), torrent).map_err(|e| {
+        let manager = PeerConnectionManager::new(config.peer, torrent).map_err(|e| {
             RuntimeError::InvalidConfig(match e {
                 styx_core::CoreError::InvalidConfig { field } => field,
                 _ => "peer manager config is invalid",
@@ -345,6 +346,30 @@ impl TorrentTask {
     }
 
     fn tick(&mut self) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        let events = self.tick_state()?;
+
+        if self.status != TorrentStatus::Downloading {
+            return Ok(events);
+        }
+
+        let now = Instant::now();
+
+        // Drain incoming messages from all peers
+        for (key, msg) in self.peers.drain_messages() {
+            if let Ok(actions) = self.manager.handle_message(key, msg, now) {
+                self.execute_actions(actions);
+            }
+        }
+
+        // Drive policy: choke/unchoke + block requests
+        if let Ok(actions) = self.manager.tick(now) {
+            self.execute_actions(actions);
+        }
+
+        Ok(events)
+    }
+
+    fn tick_state(&mut self) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         match self.status {
             TorrentStatus::Discovering => self.transition(TorrentStatus::Downloading),
             TorrentStatus::Checking => self.transition(TorrentStatus::Discovering),
@@ -355,6 +380,27 @@ impl TorrentTask {
             | TorrentStatus::Cancelled => Err(RuntimeError::InvalidConfig(
                 "illegal torrent state transition",
             )),
+        }
+    }
+
+    fn execute_actions(&mut self, actions: Vec<PeerAction>) {
+        for action in actions {
+            match action {
+                PeerAction::SendMessage { peer, message } => {
+                    let _ = self.peers.send_message(peer, message);
+                }
+                PeerAction::Disconnect { peer, reason: _ } => {
+                    if let Some(addr) = self.peers.peer_addr(peer) {
+                        self.peers.remove_peer(peer);
+                        let _ = self.manager.remove_peer(peer);
+                        // Source cleanup happens via separate lifecycle
+                        let _ = addr;
+                    }
+                }
+                PeerAction::AcceptBlock { .. }
+                | PeerAction::CancelDuplicate { .. }
+                | PeerAction::RecordInterest { .. } => {}
+            }
         }
     }
 
@@ -405,8 +451,9 @@ mod tests {
     use crate::{SourceKind, SourceState};
     use styx_disk::DiskPlan;
     use styx_proto::{
-        read_handshake, write_handshake, ExtensionBits, FileMode, Handshake, InfoHashV1, PeerId,
-        TorrentInfo, TorrentMetainfo,
+        read_handshake, read_message, write_handshake, write_message, ExtensionBits, FileMode,
+        Handshake, InfoHashV1, PeerId, PeerMessage, TorrentInfo, TorrentMetainfo,
+        DEFAULT_MAX_PEER_FRAME_LEN,
     };
 
     fn make_v1_plan() -> TorrentPlan {
@@ -437,8 +484,8 @@ mod tests {
             total_size: 32768,
             announce_urls: vec![Url::parse("http://127.0.0.1:6969/announce").unwrap()],
             web_seed_urls: Vec::new(),
+            disk_plan: DiskPlan::from_metainfo(&metainfo, "/tmp").unwrap(),
             metainfo,
-            disk_plan: DiskPlan::new_v2("/tmp", &[], 16384, vec![]).unwrap(),
         }
     }
 
@@ -503,7 +550,6 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             addrs.push(addr);
-            let info_hash = info_hash;
             tokio::spawn(async move {
                 let (stream, _) = listener.accept().await.unwrap();
                 let (mut r, mut w) = stream.into_split();
@@ -593,5 +639,145 @@ mod tests {
 
         // Source should now be CoolingDown (1 failure, retry_limit=3)
         assert_eq!(task.sources.state(sid).unwrap(), SourceState::CoolingDown);
+    }
+
+    #[tokio::test]
+    async fn t4_t1_tick_processes_messages_and_drives_policy() {
+        let plan = make_v1_plan();
+        let config = make_config();
+        let mut task = TorrentTask::new_with_peers(plan, config).unwrap();
+        let info_hash = task.plan.info_hash;
+
+        // Transition to Downloading
+        task.apply(TorrentCommand::Start).unwrap();
+        task.tick().unwrap();
+        assert_eq!(task.status, TorrentStatus::Downloading);
+
+        // Start a mock seed peer
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mock_msgs: std::sync::Arc<std::sync::Mutex<Vec<PeerMessage>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let msgs = mock_msgs.clone();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut r, mut w) = stream.into_split();
+            let _handshake = read_handshake(&mut r, info_hash).await.unwrap();
+            let response = Handshake {
+                reserved: ExtensionBits::default(),
+                info_hash,
+                peer_id: PeerId::new([0xFF; 20]),
+            };
+            write_handshake(&mut w, &response).await.unwrap();
+
+            // Send bitfield (2 pieces available) and unchoke
+            write_message(
+                &mut w,
+                &PeerMessage::Bitfield {
+                    bytes: vec![0xC0].into(),
+                },
+            )
+            .await
+            .unwrap();
+            write_message(&mut w, &PeerMessage::Unchoke).await.unwrap();
+
+            // Collect messages from the client until read error
+            while let Ok(msg) = read_message(&mut r, DEFAULT_MAX_PEER_FRAME_LEN).await {
+                msgs.lock().unwrap().push(msg);
+            }
+        });
+
+        // Connect peer via discover_and_connect_peers
+        task.sources
+            .add_candidate(SourceEndpoint::Peer(addr), SourceKind::Peer)
+            .unwrap();
+        let events = task.discover_and_connect_peers().await.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Give the mock peer time to send bitfield + unchoke and for read_loop to pick them up
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // First tick: drain messages → handle_message(Bitfield + Unchoke)
+        // Should produce SendMessage(Interested) actions and mark peer unchoked
+        let events = task.tick().unwrap();
+        assert!(events.is_empty());
+
+        // Wait for write loop to send Interested over TCP
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Second tick: manager.tick() should request blocks since we're interested + unchoked
+        let events = task.tick().unwrap();
+        assert!(events.is_empty());
+
+        // Wait for write loop to flush
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let received = mock_msgs.lock().unwrap();
+        assert!(
+            !received.is_empty(),
+            "expected at least one message from tick"
+        );
+
+        let has_interested = received
+            .iter()
+            .any(|m| matches!(m, PeerMessage::Interested));
+        let has_request = received
+            .iter()
+            .any(|m| matches!(m, PeerMessage::Request { .. }));
+        assert!(
+            has_interested,
+            "mock should have received Interested; got: {received:?}"
+        );
+        assert!(
+            has_request,
+            "mock should have received at least one Request; got: {received:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn t4_t2_tick_handles_peer_disconnect_gracefully() {
+        let plan = make_v1_plan();
+        let config = make_config();
+        let mut task = TorrentTask::new_with_peers(plan, config).unwrap();
+        let info_hash = task.plan.info_hash;
+
+        // Transition to Downloading
+        task.apply(TorrentCommand::Start).unwrap();
+        task.tick().unwrap();
+        assert_eq!(task.status, TorrentStatus::Downloading);
+
+        // Start mock peer that disconnects after handshake
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut r, mut w) = stream.into_split();
+            let _handshake = read_handshake(&mut r, info_hash).await.unwrap();
+            let response = Handshake {
+                reserved: ExtensionBits::default(),
+                info_hash,
+                peer_id: PeerId::new([0xFF; 20]),
+            };
+            write_handshake(&mut w, &response).await.unwrap();
+            // Drop halves to close the connection
+            drop(r);
+            drop(w);
+        });
+
+        // Connect peer
+        task.sources
+            .add_candidate(SourceEndpoint::Peer(addr), SourceKind::Peer)
+            .unwrap();
+        let events = task.discover_and_connect_peers().await.unwrap();
+        assert_eq!(events.len(), 1);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // tick should handle gracefully (drain returns empty or processes remaining messages)
+        let result = task.tick();
+        assert!(result.is_ok());
     }
 }

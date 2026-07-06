@@ -117,14 +117,9 @@ async fn read_loop(
     mut read_half: tokio::net::tcp::OwnedReadHalf,
     tx: mpsc::UnboundedSender<PeerMessage>,
 ) {
-    loop {
-        match read_message(&mut read_half, DEFAULT_MAX_PEER_FRAME_LEN).await {
-            Ok(msg) => {
-                if tx.send(msg).is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
+    while let Ok(msg) = read_message(&mut read_half, DEFAULT_MAX_PEER_FRAME_LEN).await {
+        if tx.send(msg).is_err() {
+            break;
         }
     }
 }
