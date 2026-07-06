@@ -7,7 +7,8 @@ use std::ops::Range;
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-const MAX_NESTING_DEPTH: usize = 512;
+const MAX_NESTING_DEPTH: usize = 128;
+const MAX_BYTE_STRING_LENGTH: usize = 32 * 1024 * 1024;
 
 /// A decoded BEP 3 bencode value.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +63,8 @@ pub enum BencodeError {
     DuplicateDictionaryKey { offset: usize },
     /// The nesting depth exceeded the parser limit.
     DepthLimitExceeded { offset: usize, limit: usize },
+    /// A byte string length exceeded the maximum allowed size.
+    ByteStringTooLarge { offset: usize, limit: usize },
 }
 
 impl fmt::Display for BencodeError {
@@ -105,6 +108,12 @@ impl fmt::Display for BencodeError {
             }
             Self::DepthLimitExceeded { offset, limit } => {
                 write!(f, "bencode nesting exceeds limit {limit} at offset {offset}")
+            }
+            Self::ByteStringTooLarge { offset, limit } => {
+                write!(
+                    f,
+                    "byte string at offset {offset} exceeds maximum length {limit}"
+                )
             }
         }
     }
@@ -253,6 +262,12 @@ impl Parser<'_> {
     fn parse_bytes(&mut self) -> Result<Bytes, BencodeError> {
         let start = self.offset;
         let length = self.parse_byte_string_length()?;
+        if length > MAX_BYTE_STRING_LENGTH {
+            return Err(BencodeError::ByteStringTooLarge {
+                offset: start,
+                limit: MAX_BYTE_STRING_LENGTH,
+            });
+        }
         let data_start = self.offset;
         let remaining = self.input.len().saturating_sub(data_start);
         if remaining < length {
@@ -666,6 +681,32 @@ mod tests {
             Err(BencodeError::DepthLimitExceeded {
                 offset: MAX_NESTING_DEPTH + 1,
                 limit: MAX_NESTING_DEPTH,
+            })
+        );
+    }
+
+    #[test]
+    fn decode_rejects_large_byte_string() {
+        let limit = 32 * 1024 * 1024;
+        // A byte string length of limit+1 with no actual data
+        let input = format!("{}:", limit + 1);
+        assert_eq!(
+            decode(input.as_bytes()),
+            Err(BencodeError::ByteStringTooLarge { offset: 0, limit })
+        );
+    }
+
+    #[test]
+    fn decode_rejects_deeply_nested_list() {
+        let depth = 130;
+        let mut input = vec![b'l'; depth];
+        input.extend(std::iter::repeat_n(b'e', depth));
+
+        assert_eq!(
+            decode(&input),
+            Err(BencodeError::DepthLimitExceeded {
+                offset: 129,
+                limit: 128,
             })
         );
     }
