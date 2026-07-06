@@ -556,20 +556,22 @@ fn is_legal_transition(from: TorrentStatus, to: TorrentStatus) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, SocketAddr};
 
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-
 
     use super::*;
     use crate::{SourceKind, SourceState};
     use sha1::{Digest, Sha1};
     use styx_disk::DiskPlan;
     use styx_proto::{
-        read_handshake, read_message, write_handshake, write_message, ExtensionBits, FileMode,
-        Handshake, InfoHashV1, PeerId, PeerMessage, TorrentInfo, TorrentMetainfo,
+        read_handshake, read_message, write_handshake, write_message, BencodeValue, ExtensionBits,
+        FileMode, Handshake, InfoHashV1, PeerId, PeerMessage, TorrentInfo, TorrentMetainfo,
         DEFAULT_MAX_PEER_FRAME_LEN,
     };
+
 
     const TEST_INFO_HASH: [u8; 20] = [0u8; 20];
     const VERIFIABLE_INFO_HASH: [u8; 20] = [1u8; 20];
@@ -1109,6 +1111,87 @@ mod tests {
             events.is_empty(),
             "no events expected for corrupt piece; got: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn t5_t1_tracker_announce_feeds_sourcetable_and_connects_peers() {
+        let info_hash = InfoHashV1::new(TEST_INFO_HASH);
+
+        // Start mock TCP peer servers that respond with handshake
+        let mut peer_addrs = Vec::new();
+        for _ in 0..2 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            peer_addrs.push(addr);
+            let ih = info_hash;
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut r, mut w) = stream.into_split();
+                let _ = read_handshake(&mut r, ih).await;
+                let response = Handshake {
+                    reserved: ExtensionBits::default(),
+                    info_hash: ih,
+                    peer_id: PeerId::new([0xFE; 20]),
+                };
+                let _ = write_handshake(&mut w, &response).await;
+            });
+        }
+
+        // Start minimal HTTP tracker server that returns peer_addrs
+        let tracker_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tracker_addr = tracker_listener.local_addr().unwrap();
+        let connect_peers = peer_addrs.clone();
+        tokio::spawn(async move {
+            let (mut stream, _) = tracker_listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            let mut dict = BTreeMap::new();
+            dict.insert(b"complete".to_vec(), BencodeValue::Integer(2));
+            dict.insert(b"incomplete".to_vec(), BencodeValue::Integer(0));
+            dict.insert(b"interval".to_vec(), BencodeValue::Integer(600));
+            let mut compact = Vec::with_capacity(connect_peers.len() * 6);
+            for p in &connect_peers {
+                if let SocketAddr::V4(v4) = p {
+                    compact.extend_from_slice(&v4.ip().octets());
+                    compact.extend_from_slice(&v4.port().to_be_bytes());
+                }
+            }
+            dict.insert(b"peers".to_vec(), BencodeValue::Bytes(Bytes::from(compact)));
+            let body = styx_proto::encode(&BencodeValue::Dict(dict));
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.write_all(&body).await;
+        });
+
+        // Create plan pointing at our mock tracker
+        let mut tracker_plan = make_v1_plan();
+        tracker_plan.announce_urls = vec![format!("http://{}/announce", tracker_addr).parse().unwrap()];
+        let config = make_config();
+        let mut task = TorrentTask::new_with_peers(tracker_plan, config).unwrap();
+
+        // Call discover_and_connect_peers — tracker announce → SourceTable → TCP connect
+        let events = task.discover_and_connect_peers().await.unwrap();
+
+        // Should have 3 events: no SourceFailed, and 2 PeerConnected
+        let source_fails: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, RuntimeEvent::SourceFailed { .. }))
+            .collect();
+        assert!(source_fails.is_empty(), "unexpected SourceFailed: {source_fails:?}");
+
+        assert_eq!(
+            events.len(),
+            2,
+            "expected 2 PeerConnected events; got: {events:?}"
+        );
+        for event in &events {
+            assert!(matches!(event, RuntimeEvent::PeerConnected { .. }));
+        }
+        assert_eq!(task.peers.connected_count(), 2);
+        assert!(task.last_announce.is_some());
     }
 
     #[tokio::test]
