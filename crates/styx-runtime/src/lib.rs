@@ -10,6 +10,7 @@ mod error;
 mod intent;
 mod peer;
 mod peer_io;
+mod peer_table;
 mod rate;
 mod session;
 mod settings;
