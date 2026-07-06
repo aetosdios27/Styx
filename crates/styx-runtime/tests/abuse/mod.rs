@@ -1,4 +1,7 @@
+mod corrupt_peer_tests;
 mod large_torrent;
+mod large_torrent_tests;
 mod mock_peer;
 mod mock_tracker;
 mod mock_web_seed;
+mod slow_peer_tests;

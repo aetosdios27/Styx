@@ -38,6 +38,124 @@ impl LargeTorrentConfig {
         encode(&BencodeValue::Dict(top))
     }
 
+    /// Generate torrent bytes using zero-filled virtual data.
+    /// Avoids materializing the entire content in memory — hashes are computed
+    /// one piece at a time. Suitable for large torrents.
+    pub fn generate_torrent_bytes_streaming(&self) -> Vec<u8> {
+        let info_dict = self.build_info_dict_streaming();
+        let mut top = BTreeMap::new();
+        top.insert(
+            b"announce".to_vec(),
+            BencodeValue::Bytes(Bytes::from_static(b"http://tracker.styx.test/announce")),
+        );
+        top.insert(b"info".to_vec(), info_dict);
+        encode(&BencodeValue::Dict(top))
+    }
+
+    fn build_info_dict_streaming(&self) -> BencodeValue {
+        let piece_size = self.piece_size;
+        let num_pieces = self.piece_count();
+
+        match self.mode {
+            TorrentMode::V1 => self.build_v1_info_streaming(piece_size, num_pieces),
+            TorrentMode::V2 => self.build_v2_info_streaming(piece_size),
+            TorrentMode::Hybrid => self.build_hybrid_info_streaming(piece_size, num_pieces),
+        }
+    }
+
+    fn build_v1_info_streaming(&self, piece_size: u32, num_pieces: u32) -> BencodeValue {
+        let mut info = BTreeMap::new();
+        info.insert(
+            b"name".to_vec(),
+            BencodeValue::Bytes(Bytes::from_static(b"test_torrent")),
+        );
+        info.insert(
+            b"piece length".to_vec(),
+            BencodeValue::Integer(piece_size as i64),
+        );
+
+        let v1_hashes = compute_v1_hashes_streaming(
+            self.total_size,
+            piece_size as usize,
+            num_pieces,
+        );
+        info.insert(
+            b"pieces".to_vec(),
+            BencodeValue::Bytes(Bytes::from(v1_hashes)),
+        );
+
+        info.insert(
+            b"length".to_vec(),
+            BencodeValue::Integer(self.total_size as i64),
+        );
+
+        BencodeValue::Dict(info)
+    }
+
+    fn build_v2_info_streaming(&self, piece_size: u32) -> BencodeValue {
+        let mut info = BTreeMap::new();
+        info.insert(b"meta version".to_vec(), BencodeValue::Integer(2));
+        info.insert(
+            b"name".to_vec(),
+            BencodeValue::Bytes(Bytes::from_static(b"test_torrent")),
+        );
+        info.insert(
+            b"piece length".to_vec(),
+            BencodeValue::Integer(piece_size as i64),
+        );
+
+        let pieces_root = compute_merkle_root_streaming(self.total_size, piece_size as usize);
+        info.insert(
+            b"pieces root".to_vec(),
+            BencodeValue::Bytes(Bytes::copy_from_slice(&pieces_root)),
+        );
+
+        let file_tree = build_file_tree_streaming(self.total_size, self.file_count, piece_size as usize);
+        info.insert(b"file tree".to_vec(), file_tree);
+
+        BencodeValue::Dict(info)
+    }
+
+    fn build_hybrid_info_streaming(&self, piece_size: u32, num_pieces: u32) -> BencodeValue {
+        let mut info = BTreeMap::new();
+        info.insert(
+            b"name".to_vec(),
+            BencodeValue::Bytes(Bytes::from_static(b"test_torrent")),
+        );
+        info.insert(
+            b"piece length".to_vec(),
+            BencodeValue::Integer(piece_size as i64),
+        );
+
+        let v1_hashes = compute_v1_hashes_streaming(
+            self.total_size,
+            piece_size as usize,
+            num_pieces,
+        );
+        info.insert(
+            b"pieces".to_vec(),
+            BencodeValue::Bytes(Bytes::from(v1_hashes)),
+        );
+
+        info.insert(
+            b"length".to_vec(),
+            BencodeValue::Integer(self.total_size as i64),
+        );
+
+        info.insert(b"meta version".to_vec(), BencodeValue::Integer(2));
+
+        let pieces_root = compute_merkle_root_streaming(self.total_size, piece_size as usize);
+        info.insert(
+            b"pieces root".to_vec(),
+            BencodeValue::Bytes(Bytes::copy_from_slice(&pieces_root)),
+        );
+
+        let file_tree = build_file_tree_streaming(self.total_size, self.file_count, piece_size as usize);
+        info.insert(b"file tree".to_vec(), file_tree);
+
+        BencodeValue::Dict(info)
+    }
+
     pub fn generate_disk_data(&self) -> BTreeMap<String, Bytes> {
         let file_count = self.file_count.max(1);
         let base_size = self.total_size / file_count as u64;
@@ -258,6 +376,94 @@ fn compute_merkle_root(data: &[u8], piece_size: usize) -> [u8; 32] {
         level = next;
     }
     level[0]
+}
+
+fn compute_v1_hashes_streaming(total_size: u64, piece_size: usize, num_pieces: u32) -> Vec<u8> {
+    let mut hashes = Vec::with_capacity(num_pieces as usize * 20);
+    let full_pieces = (total_size / piece_size as u64) as usize;
+    let last_piece_bytes = (total_size % piece_size as u64) as usize;
+
+    // Reusable zero-filled buffer — one piece at a time avoids big allocation.
+    let buf = vec![0u8; piece_size];
+    for _ in 0..full_pieces {
+        hashes.extend_from_slice(&Sha1::digest(&buf));
+    }
+    if last_piece_bytes > 0 {
+        hashes.extend_from_slice(&Sha1::digest(&buf[..last_piece_bytes]));
+    }
+    hashes
+}
+
+fn compute_merkle_root_streaming(total_size: u64, piece_size: usize) -> [u8; 32] {
+    let num_pieces = total_size.div_ceil(piece_size as u64) as usize;
+    let last_piece_bytes = if total_size.is_multiple_of(piece_size as u64) {
+        piece_size
+    } else {
+        (total_size % piece_size as u64) as usize
+    };
+
+    // Build leaf level from zero-filled hashes without allocating the full data.
+    let buf = vec![0u8; piece_size];
+    let mut level: Vec<[u8; 32]> = Vec::with_capacity(num_pieces);
+    for i in 0..num_pieces {
+        let chunk = if i == num_pieces - 1 && last_piece_bytes != piece_size {
+            &buf[..last_piece_bytes]
+        } else {
+            &buf
+        };
+        level.push(Sha256::digest(chunk).into());
+    }
+
+    if level.is_empty() {
+        return Sha256::digest([]).into();
+    }
+
+    while level.len() > 1 {
+        let capacity = level.len().div_ceil(2);
+        let mut next = Vec::with_capacity(capacity);
+        for pair in level.chunks(2) {
+            if pair.len() == 2 {
+                let mut combined = Vec::with_capacity(64);
+                combined.extend_from_slice(&pair[0]);
+                combined.extend_from_slice(&pair[1]);
+                next.push(Sha256::digest(&combined).into());
+            } else {
+                next.push(pair[0]);
+            }
+        }
+        level = next;
+    }
+    level[0]
+}
+
+fn build_file_tree_streaming(total_size: u64, file_count: u32, piece_size: usize) -> BencodeValue {
+    let mut tree = BTreeMap::new();
+    for i in 0..file_count.max(1) {
+        let base_size = total_size / file_count.max(1) as u64;
+        let remainder = total_size % file_count.max(1) as u64;
+        let size = if i == file_count - 1 {
+            base_size + remainder
+        } else {
+            base_size
+        };
+        let pieces_root = compute_merkle_root_streaming(size, piece_size);
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            b"length".to_vec(),
+            BencodeValue::Integer(size as i64),
+        );
+        entry.insert(
+            b"pieces root".to_vec(),
+            BencodeValue::Bytes(Bytes::copy_from_slice(&pieces_root)),
+        );
+        let mut file_leaf = BTreeMap::new();
+        file_leaf.insert(b"".to_vec(), BencodeValue::Dict(entry));
+        tree.insert(
+            format!("file_{i}.bin").into_bytes(),
+            BencodeValue::Dict(file_leaf),
+        );
+    }
+    BencodeValue::Dict(tree)
 }
 
 fn build_file_tree(disk_data: &BTreeMap<String, Bytes>, piece_size: usize) -> BencodeValue {
