@@ -4101,6 +4101,7 @@ dependencies = [
  "rand 0.9.4",
  "reqwest 0.12.28",
  "sha1",
+ "sha2",
  "styx-app",
  "styx-core",
  "styx-disk",
