@@ -490,6 +490,55 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn concurrent_piece_verification_verifies_multiple_pieces() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(tokio::sync::Mutex::new(PieceManager::new(
+            plan_for_root_and_pieces(temp.path(), &[b"abcd", b"efgh"], 4),
+        )));
+        let plan_clone = std::sync::Arc::clone(&manager);
+
+        let first = tokio::spawn(async move {
+            let mut mgr = plan_clone.lock().await;
+            let p0 = PieceIndex::new(0);
+            mgr.accept_block(block(p0, 0, 4, 4), Bytes::from_static(b"abcd"))
+                .unwrap();
+            mgr.verify_and_commit_piece(p0).await.unwrap()
+        });
+        let second_manager = std::sync::Arc::clone(&manager);
+        let second = tokio::spawn(async move {
+            let mut mgr = second_manager.lock().await;
+            let p1 = PieceIndex::new(1);
+            mgr.accept_block(block(p1, 0, 4, 4), Bytes::from_static(b"efgh"))
+                .unwrap();
+            mgr.verify_and_commit_piece(p1).await.unwrap()
+        });
+
+        let r1 = first.await.unwrap();
+        let r2 = second.await.unwrap();
+        assert_eq!(
+            r1,
+            VerificationResult::Verified {
+                piece: PieceIndex::new(0)
+            }
+        );
+        assert_eq!(
+            r2,
+            VerificationResult::Verified {
+                piece: PieceIndex::new(1)
+            }
+        );
+
+        let mgr = manager.lock().await;
+        assert!(mgr.has_piece(PieceIndex::new(0)));
+        assert!(mgr.has_piece(PieceIndex::new(1)));
+        assert_eq!(mgr.verified_piece_count(), 2);
+        assert_eq!(
+            tokio::fs::read(temp.path().join("file.bin")).await.unwrap(),
+            b"abcdefgh"
+        );
+    }
+
     fn block(piece: PieceIndex, offset: u32, length: u32, piece_length: u32) -> BlockSpec {
         BlockSpec::new(
             piece,
