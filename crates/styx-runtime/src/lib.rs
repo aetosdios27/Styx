@@ -9,6 +9,7 @@ mod engine;
 mod error;
 mod intent;
 mod peer;
+mod peer_io;
 mod rate;
 mod session;
 mod settings;
