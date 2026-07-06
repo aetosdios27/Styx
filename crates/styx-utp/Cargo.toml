@@ -5,6 +5,5 @@ edition = "2021"
 
 [dependencies]
 bytes = { workspace = true }
-rand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

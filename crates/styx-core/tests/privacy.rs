@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use rand::{CryptoRng, Error as RandError, RngCore, SeedableRng};
+use rand::{CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use styx_core::{
     CoreError, PeerIdPrefix, PeerIdentityManager, PeerKey, PrivacyAction, PrivacyConfig,
@@ -131,11 +131,6 @@ impl RngCore for FixedRng {
         for (index, byte) in dest.iter_mut().enumerate() {
             *byte = self.0[index % self.0.len()];
         }
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RandError> {
-        self.fill_bytes(dest);
-        Ok(())
     }
 }
 

@@ -10,10 +10,10 @@ use clap::Parser;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
-use rand::distributions::{Distribution, Uniform, WeightedIndex};
+use rand::distr::weighted::WeightedIndex;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Exp, LogNormal};
+use rand_distr::{Distribution, Exp, LogNormal, Uniform};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -273,7 +273,7 @@ fn simulate(config: &SimConfig) -> Result<SimulationOutput> {
 
         let mut decisions = Vec::new();
         for leecher_id in active_leechers(&peers, tick) {
-            if rng.gen_bool(config.churn_rate) {
+            if rng.random_bool(config.churn_rate) {
                 peers[leecher_id].end_tick = tick;
                 continue;
             }
@@ -300,8 +300,8 @@ fn simulate(config: &SimConfig) -> Result<SimulationOutput> {
         }
 
         for (leecher_id, piece, uploader_id) in decisions {
-            let success =
-                rng.gen_bool(peers[uploader_id].reliability) && rng.gen_bool(config.transfer_rate);
+            let success = rng.random_bool(peers[uploader_id].reliability)
+                && rng.random_bool(config.transfer_rate);
             let latency =
                 sample_delivery_latency(&peers[uploader_id], &peers[leecher_id], &mut rng);
             let block_offset = (tick % 16) * BLOCK_BYTES;
@@ -397,7 +397,7 @@ fn generate_peers(config: &SimConfig, total_ticks: u64, rng: &mut ChaCha8Rng) ->
         let start_tick = if role == PeerRole::Seeder {
             0
         } else {
-            rng.gen_range(0..total_ticks.max(1))
+            rng.random_range(0..total_ticks.max(1))
         };
         let sampled_lifetime = churn.sample(rng).ceil() as u64 + 1;
         let end_tick = if role == PeerRole::Seeder {
@@ -417,7 +417,7 @@ fn generate_peers(config: &SimConfig, total_ticks: u64, rng: &mut ChaCha8Rng) ->
         } else {
             let initial_density = 0.0;
             for piece in 0..config.pieces {
-                if rng.gen_bool(initial_density) {
+                if rng.random_bool(initial_density) {
                     pieces.insert(piece);
                 }
             }
@@ -471,7 +471,7 @@ fn sample_reliability(client: ClientFamily, rng: &mut ChaCha8Rng) -> f64 {
         ClientFamily::Libtorrent => 0.92,
         ClientFamily::Unknown => 0.78,
     };
-    (base + rng.gen_range(-0.12..0.06)).clamp(0.35, 0.995)
+    (base + rng.random_range(-0.12..0.06)).clamp(0.35, 0.995)
 }
 
 fn active_uploaders(peers: &[Peer], tick: u64) -> Vec<usize> {
@@ -518,7 +518,7 @@ fn select_piece(
         [(rarest, _), (second, _), ..] => {
             if no_rfwpms {
                 Some(*rarest)
-            } else if rng.gen_bool(0.18) {
+            } else if rng.random_bool(0.18) {
                 Some(*second)
             } else {
                 Some(*rarest)
@@ -557,7 +557,7 @@ fn select_uploader(
 }
 
 fn sample_delivery_latency(uploader: &Peer, leecher: &Peer, rng: &mut ChaCha8Rng) -> f64 {
-    let jitter = Uniform::new(0.85, 1.35).sample(rng);
+    let jitter = Uniform::new(0.85, 1.35).unwrap().sample(rng);
     (uploader.latency_ms * 0.7 + leecher.latency_ms * 0.3) * jitter
 }
 
