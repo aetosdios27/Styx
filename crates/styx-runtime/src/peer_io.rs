@@ -38,9 +38,12 @@ impl PeerIo {
     ) -> Result<Self, PeerWireError> {
         let stream = timeout(connect_timeout, TcpStream::connect(addr))
             .await
-            .map_err(|_| PeerWireError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut, "connect timeout",
-            )))?
+            .map_err(|_| {
+                PeerWireError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "connect timeout",
+                ))
+            })?
             .map_err(PeerWireError::Io)?;
 
         let (mut read_half, mut write_half) = stream.into_split();
@@ -282,10 +285,7 @@ mod tests {
         let result = PeerIo::connect(addr, info_hash, peer_id, Duration::from_secs(5)).await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result,
-            Err(PeerWireError::InfoHashMismatch)
-        ));
+        assert!(matches!(result, Err(PeerWireError::InfoHashMismatch)));
 
         let _ = tokio::time::timeout(Duration::from_secs(2), rx_done).await;
         mock.await.unwrap();

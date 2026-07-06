@@ -58,14 +58,7 @@ impl PeerTable {
         self.next_key += 1;
 
         self.by_addr.insert(addr, key);
-        self.by_key.insert(
-            key,
-            ActivePeer {
-                key,
-                addr,
-                io,
-            },
-        );
+        self.by_key.insert(key, ActivePeer { key, addr, io });
         Ok(key)
     }
 
@@ -87,11 +80,7 @@ impl PeerTable {
     }
 
     pub fn send_message(&self, key: PeerKey, msg: PeerMessage) -> Result<(), ()> {
-        self.by_key
-            .get(&key)
-            .ok_or(())?
-            .io
-            .send(msg)
+        self.by_key.get(&key).ok_or(())?.io.send(msg)
     }
 
     pub fn peer_addr(&self, key: PeerKey) -> Option<SocketAddr> {
@@ -103,10 +92,7 @@ impl PeerTable {
     }
 
     pub fn connected_peers(&self) -> Vec<(PeerKey, SocketAddr)> {
-        self.by_key
-            .values()
-            .map(|p| (p.key, p.addr))
-            .collect()
+        self.by_key.values().map(|p| (p.key, p.addr)).collect()
     }
 
     pub fn connected_count(&self) -> usize {
@@ -122,8 +108,9 @@ impl PeerTable {
 mod tests {
     use std::time::Duration;
 
-    use styx_proto::{encode_handshake, encode_message, ExtensionBits, Handshake,
-        InfoHashV1, PeerId, PeerMessage, PEER_HANDSHAKE_LEN,
+    use styx_proto::{
+        encode_handshake, encode_message, ExtensionBits, Handshake, InfoHashV1, PeerId,
+        PeerMessage, PEER_HANDSHAKE_LEN,
     };
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
@@ -226,7 +213,9 @@ mod tests {
 
         let messages = table.drain_messages();
         assert!(
-            messages.iter().any(|(k, msg)| *k == key && *msg == PeerMessage::Unchoke),
+            messages
+                .iter()
+                .any(|(k, msg)| *k == key && *msg == PeerMessage::Unchoke),
             "should receive Unchoke from peer, got: {messages:?}"
         );
 
@@ -416,7 +405,9 @@ mod tests {
         let mock1_info = info_hash;
         let mock1 = tokio::spawn(async move {
             mock_peer_handshake(listener1, mock1_info, test_peer_id(10)).await;
-            loop { tokio::time::sleep(Duration::from_secs(3600)).await; }
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
         });
 
         let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -424,12 +415,20 @@ mod tests {
         let mock2_info = info_hash;
         let mock2 = tokio::spawn(async move {
             mock_peer_handshake(listener2, mock2_info, test_peer_id(11)).await;
-            loop { tokio::time::sleep(Duration::from_secs(3600)).await; }
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
         });
 
         let mut table = PeerTable::new(10);
-        let key1 = table.connect_peer(addr1, info_hash, test_peer_id(1), Duration::from_secs(5)).await.unwrap();
-        let key2 = table.connect_peer(addr2, info_hash, test_peer_id(2), Duration::from_secs(5)).await.unwrap();
+        let key1 = table
+            .connect_peer(addr1, info_hash, test_peer_id(1), Duration::from_secs(5))
+            .await
+            .unwrap();
+        let key2 = table
+            .connect_peer(addr2, info_hash, test_peer_id(2), Duration::from_secs(5))
+            .await
+            .unwrap();
 
         let peers = table.connected_peers();
         assert_eq!(peers.len(), 2);

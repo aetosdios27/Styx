@@ -50,6 +50,8 @@ pub enum SourceFailure {
 #[derive(Clone, Debug)]
 pub struct SourceTable {
     retry_limit: usize,
+    max_sources: usize,
+    next_id: u64,
     entries: BTreeMap<SourceId, SourceEntry>,
 }
 
@@ -100,7 +102,7 @@ impl SourceTable {
         config.clone().validate()?;
         let mut seen = BTreeSet::new();
         let mut entries = BTreeMap::new();
-        let mut next_id = 1_u64;
+        let mut next_id: u64 = 1;
 
         for mut candidate in candidates {
             if !seen.insert(candidate.endpoint.clone()) {
@@ -124,6 +126,8 @@ impl SourceTable {
 
         Ok(Self {
             retry_limit: config.limits.source_retry_limit,
+            max_sources: config.limits.max_sources_per_torrent,
+            next_id,
             entries,
         })
     }
@@ -183,6 +187,35 @@ impl SourceTable {
             }
         }
         Ok(())
+    }
+
+    pub fn add_candidate(
+        &mut self,
+        endpoint: SourceEndpoint,
+        kind: SourceKind,
+    ) -> Result<SourceId, RuntimeError> {
+        if self.entries.len() >= self.max_sources {
+            return Err(RuntimeError::SourceTableFull);
+        }
+        if self
+            .entries
+            .values()
+            .any(|e| e.candidate.endpoint == endpoint)
+        {
+            return Err(RuntimeError::DuplicateSource);
+        }
+        let id = SourceId::new(self.next_id);
+        self.next_id += 1;
+        let candidate = SourceCandidate { id, kind, endpoint };
+        self.entries.insert(
+            id,
+            SourceEntry {
+                candidate,
+                state: SourceState::Fresh,
+                failures: 0,
+            },
+        );
+        Ok(id)
     }
 
     pub fn state(&self, source: SourceId) -> Result<SourceState, RuntimeError> {

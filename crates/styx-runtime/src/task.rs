@@ -1,13 +1,16 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use styx_core::{PeerConnectionManager, TorrentState};
 use styx_disk::{
     block_specs_for_piece, BlockSpec, PieceIndex, PieceManager, ResumeSummary, VerificationResult,
 };
+use styx_proto::PeerId;
 
 use crate::{
-    RateCounter, RuntimeError, RuntimeEvent, TorrentCommand, TorrentId, TorrentPlan,
-    TorrentSnapshot, TorrentStatus,
+    peer_table::PeerTable, RateCounter, RuntimeConfig, RuntimeError, RuntimeEvent, SourceEndpoint,
+    SourceFailure, SourceId, SourceTable, TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot,
+    TorrentStatus,
 };
 
 #[derive(Debug)]
@@ -22,12 +25,28 @@ pub struct TorrentTask {
     last_rate_tick: Instant,
     cached_down_rate: u64,
     cached_up_rate: u64,
+    manager: PeerConnectionManager,
+    peers: PeerTable,
+    sources: SourceTable,
+    peer_id: PeerId,
+    last_announce: Option<Instant>,
+    announce_interval: Duration,
 }
 
 impl TorrentTask {
     #[must_use]
     pub fn new(plan: TorrentPlan) -> Self {
         let pieces = PieceManager::new(plan.disk_plan.clone());
+        let peers = PeerTable::new(30);
+        let sources = SourceTable::from_candidates(Vec::new(), &RuntimeConfig::default())
+            .expect("empty candidate list never fails");
+        let torrent = TorrentState::new(
+            plan.piece_count() as usize,
+            plan.metainfo.info.piece_length as u32,
+            16384,
+        );
+        let manager = PeerConnectionManager::new(styx_core::PeerManagerConfig::default(), torrent)
+            .expect("default PeerManagerConfig is valid");
         Self {
             plan,
             pieces,
@@ -39,7 +58,58 @@ impl TorrentTask {
             last_rate_tick: Instant::now(),
             cached_down_rate: 0,
             cached_up_rate: 0,
+            manager,
+            peers,
+            sources,
+            peer_id: PeerId::new([0u8; 20]),
+            last_announce: None,
+            announce_interval: Duration::from_secs(1800),
         }
+    }
+
+    pub fn new_with_peers(plan: TorrentPlan, config: RuntimeConfig) -> Result<Self, RuntimeError> {
+        let pieces = PieceManager::new(plan.disk_plan.clone());
+
+        let piece_count = plan.piece_count() as usize;
+        let standard_piece_length = plan.metainfo.info.piece_length as u32;
+        let block_length = 16384_u32;
+
+        let torrent = TorrentState::new(piece_count, standard_piece_length, block_length);
+        let manager = PeerConnectionManager::new(config.peer.clone(), torrent).map_err(|e| {
+            RuntimeError::InvalidConfig(match e {
+                styx_core::CoreError::InvalidConfig { field } => field,
+                _ => "peer manager config is invalid",
+            })
+        })?;
+
+        let web_seed_candidates: Vec<crate::SourceCandidate> = plan
+            .web_seed_urls
+            .iter()
+            .map(|url| crate::SourceCandidate::web_seed(SourceId::new(0), url.clone()))
+            .collect();
+        let sources = SourceTable::from_candidates(web_seed_candidates, &config)?;
+
+        let peers = PeerTable::new(config.limits.max_peers_per_torrent);
+        let peer_id = PeerId::new([0u8; 20]);
+
+        Ok(Self {
+            plan,
+            pieces,
+            status: TorrentStatus::Checking,
+            verified_bytes: 0,
+            downloaded_bytes: 0,
+            down_rate: RateCounter::new(Duration::from_secs(2)).expect("2s window is valid"),
+            up_rate: RateCounter::new(Duration::from_secs(2)).expect("2s window is valid"),
+            last_rate_tick: Instant::now(),
+            cached_down_rate: 0,
+            cached_up_rate: 0,
+            manager,
+            peers,
+            sources,
+            peer_id,
+            last_announce: None,
+            announce_interval: Duration::from_secs(1800),
+        })
     }
 
     #[must_use]
@@ -65,6 +135,49 @@ impl TorrentTask {
             TorrentCommand::Cancel => self.transition(TorrentStatus::Cancelled),
             TorrentCommand::Tick => self.tick(),
         }
+    }
+
+    pub async fn discover_and_connect_peers(&mut self) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        let mut events = Vec::new();
+
+        for candidate in self.sources.next_candidates(usize::MAX) {
+            let SourceEndpoint::Peer(addr) = candidate.endpoint else {
+                continue;
+            };
+
+            let info_hash = self.plan.info_hash;
+            let connect_timeout = Duration::from_secs(10);
+
+            match self
+                .peers
+                .connect_peer(addr, info_hash, self.peer_id, connect_timeout)
+                .await
+            {
+                Ok(key) => {
+                    let _ = self.sources.record_success(candidate.id);
+                    let _ = self.manager.add_peer(key);
+                    events.push(RuntimeEvent::PeerConnected {
+                        torrent: self.plan.id,
+                        addr,
+                    });
+                }
+                Err(e) => {
+                    let is_full = matches!(
+                        e,
+                        styx_proto::PeerWireError::Io(ref io_err)
+                            if io_err.kind() == std::io::ErrorKind::AlreadyExists
+                    );
+                    if is_full {
+                        break;
+                    }
+                    let _ = self
+                        .sources
+                        .record_failure(candidate.id, SourceFailure::Refused);
+                }
+            }
+        }
+
+        Ok(events)
     }
 
     pub async fn accept_piece_blocks(
@@ -226,6 +339,8 @@ impl TorrentTask {
         snapshot.status = self.status;
         snapshot.down_rate = self.cached_down_rate;
         snapshot.up_rate = self.cached_up_rate;
+        snapshot.peers = self.peers.connected_count() as u32;
+        snapshot.seeds = 0;
         snapshot
     }
 
@@ -281,11 +396,18 @@ fn is_legal_transition(from: TorrentStatus, to: TorrentStatus) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use tokio::net::TcpListener;
     use url::Url;
 
     use super::*;
+    use crate::{SourceKind, SourceState};
     use styx_disk::DiskPlan;
-    use styx_proto::{FileMode, InfoHashV1, TorrentInfo, TorrentMetainfo};
+    use styx_proto::{
+        read_handshake, write_handshake, ExtensionBits, FileMode, Handshake, InfoHashV1, PeerId,
+        TorrentInfo, TorrentMetainfo,
+    };
 
     fn make_v1_plan() -> TorrentPlan {
         let info_hash = InfoHashV1::new([0u8; 20]);
@@ -320,6 +442,18 @@ mod tests {
         }
     }
 
+    fn make_config() -> RuntimeConfig {
+        RuntimeConfig {
+            limits: crate::RuntimeLimits {
+                max_peers_per_torrent: 30,
+                max_sources_per_torrent: 64,
+                source_retry_limit: 3,
+                ..crate::RuntimeLimits::default()
+            },
+            ..RuntimeConfig::default()
+        }
+    }
+
     #[test]
     fn verify_pieces_root_v1_returns_ok() {
         let task = TorrentTask::new(make_v1_plan());
@@ -343,5 +477,121 @@ mod tests {
         let result = task.complete_from_piece_bytes(wrong_pieces).await;
         assert!(result.is_err());
         assert_eq!(task.status, TorrentStatus::Checking);
+    }
+
+    #[test]
+    fn t3_t1_new_with_peers_creates_initialized_task() {
+        let plan = make_v1_plan();
+        let config = make_config();
+        let task = TorrentTask::new_with_peers(plan, config).unwrap();
+
+        assert_eq!(task.status, TorrentStatus::Checking);
+        assert_eq!(task.peers.connected_count(), 0);
+        assert_eq!(task.sources.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn t3_t2_discover_and_connect_peers_connects_to_multiple_peers() {
+        let plan = make_v1_plan();
+        let config = make_config();
+        let mut task = TorrentTask::new_with_peers(plan, config).unwrap();
+        let info_hash = task.plan.info_hash;
+
+        // Start 3 mock peer servers
+        let mut addrs = Vec::new();
+        for _ in 0..3 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            addrs.push(addr);
+            let info_hash = info_hash;
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut r, mut w) = stream.into_split();
+                let _handshake = read_handshake(&mut r, info_hash).await.unwrap();
+                let response = Handshake {
+                    reserved: ExtensionBits::default(),
+                    info_hash,
+                    peer_id: PeerId::new([0xFF; 20]),
+                };
+                write_handshake(&mut w, &response).await.unwrap();
+            });
+        }
+
+        // Add peer candidates to SourceTable
+        for addr in &addrs {
+            task.sources
+                .add_candidate(SourceEndpoint::Peer(*addr), SourceKind::Peer)
+                .unwrap();
+        }
+
+        // Discover and connect
+        let events = task.discover_and_connect_peers().await.unwrap();
+
+        assert_eq!(events.len(), 3);
+        for event in &events {
+            assert!(matches!(event, RuntimeEvent::PeerConnected { .. }));
+        }
+        assert_eq!(task.peers.connected_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn t3_t3_source_lifecycle_transitions_through_peer_connections() {
+        let plan = make_v1_plan();
+        let config = make_config();
+        let mut task = TorrentTask::new_with_peers(plan, config).unwrap();
+        let info_hash = task.plan.info_hash;
+
+        // Start one mock peer
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut r, mut w) = stream.into_split();
+            let _handshake = read_handshake(&mut r, info_hash).await.unwrap();
+            let response = Handshake {
+                reserved: ExtensionBits::default(),
+                info_hash,
+                peer_id: PeerId::new([0xFF; 20]),
+            };
+            write_handshake(&mut w, &response).await.unwrap();
+        });
+
+        // Add candidate and connect
+        let sid = task
+            .sources
+            .add_candidate(SourceEndpoint::Peer(addr), SourceKind::Peer)
+            .unwrap();
+        assert_eq!(task.sources.state(sid).unwrap(), SourceState::Fresh);
+
+        let events = task.discover_and_connect_peers().await.unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Source is now Active
+        assert_eq!(task.sources.state(sid).unwrap(), SourceState::Active);
+
+        // next_candidates should not return it
+        assert_eq!(task.sources.next_candidates(10).len(), 0);
+    }
+
+    #[tokio::test]
+    async fn t3_t4_connection_failure_tracks_in_source_table() {
+        let plan = make_v1_plan();
+        let config = make_config();
+        let mut task = TorrentTask::new_with_peers(plan, config).unwrap();
+
+        // Use an unreachable address
+        let dead_addr = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 2).into(), 1);
+
+        let sid = task
+            .sources
+            .add_candidate(SourceEndpoint::Peer(dead_addr), SourceKind::Peer)
+            .unwrap();
+        assert_eq!(task.sources.state(sid).unwrap(), SourceState::Fresh);
+
+        let events = task.discover_and_connect_peers().await.unwrap();
+        assert_eq!(events.len(), 0);
+
+        // Source should now be CoolingDown (1 failure, retry_limit=3)
+        assert_eq!(task.sources.state(sid).unwrap(), SourceState::CoolingDown);
     }
 }

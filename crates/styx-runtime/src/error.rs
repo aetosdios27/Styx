@@ -40,6 +40,10 @@ pub enum RuntimeError {
     NoPeers,
     #[error("torrent does not contain any web seed URLs")]
     NoWebSeeds,
+    #[error("source table is full")]
+    SourceTableFull,
+    #[error("duplicate source endpoint")]
+    DuplicateSource,
     #[error("all peer smoke attempts failed: {last_error}")]
     AllPeersFailed { last_error: String },
     #[error("web seed smoke path supports single-file torrents only")]
@@ -90,6 +94,8 @@ impl RuntimeError {
             Self::NoHttpTracker
             | Self::NoPeers
             | Self::NoWebSeeds
+            | Self::SourceTableFull
+            | Self::DuplicateSource
             | Self::V2NotSupported
             | Self::V2IntegrityCheckFailed(_)
             | Self::AllPeersFailed { .. }
@@ -122,6 +128,8 @@ impl RuntimeError {
             Self::AllPeersFailed { .. }
             | Self::NoHttpTracker
             | Self::NoWebSeeds
+            | Self::SourceTableFull
+            | Self::DuplicateSource
             | Self::V2NotSupported
             | Self::V2IntegrityCheckFailed(_)
             | Self::UnsupportedWebSeedLayout
@@ -165,6 +173,14 @@ impl PartialEq for RuntimeError {
             )
             || matches!((self, other), (Self::NoPeers, Self::NoPeers))
             || matches!((self, other), (Self::NoWebSeeds, Self::NoWebSeeds))
+            || matches!(
+                (self, other),
+                (Self::SourceTableFull, Self::SourceTableFull)
+            )
+            || matches!(
+                (self, other),
+                (Self::DuplicateSource, Self::DuplicateSource)
+            )
             || matches!(
                 (self, other),
                 (Self::AllPeersFailed { last_error: left }, Self::AllPeersFailed { last_error: right })
