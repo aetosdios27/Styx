@@ -1,10 +1,17 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use styx_app::TorrentRuntime;
-use styx_proto::{encode, BencodeValue};
+use styx_proto::{
+    decode_handshake, encode, write_handshake, write_message, BencodeValue, ExtensionBits,
+    Handshake, PeerId, PeerMessage, PEER_HANDSHAKE_LEN,
+};
 use styx_runtime::{AppRuntime, RuntimeConfig, RuntimeEngine};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+};
 
 #[test]
 fn snapshot_converts_torrent_status_correctly() {
@@ -249,6 +256,49 @@ fn tick_logs_accumulate_across_multiple_ticks() {
     );
 }
 
+#[tokio::test]
+async fn app_runtime_completes_added_torrent_from_tracker_peer() {
+    let temp = tempfile::tempdir().unwrap();
+    let piece_bytes = Bytes::from_static(b"abcd");
+    let peer = serve_peer(piece_bytes.clone()).await;
+    let tracker = serve_tracker(vec![peer]).await;
+    let torrent = temp.path().join("peer.torrent");
+    std::fs::write(&torrent, torrent_bytes_with_announce(tracker.as_str())).unwrap();
+
+    let config = RuntimeConfig {
+        source_timeout: std::time::Duration::from_secs(2),
+        snapshot_interval: std::time::Duration::from_millis(10),
+        ..RuntimeConfig::default()
+    };
+    let engine = RuntimeEngine::new(config).unwrap();
+    let mut runtime = AppRuntime::new(engine);
+
+    use styx_app::ControlCommand;
+    runtime
+        .apply(ControlCommand::Add {
+            source: torrent,
+            destination: Some(temp.path().join("downloads")),
+        })
+        .unwrap();
+
+    let mut completed = false;
+    for _ in 0..100 {
+        let events = runtime.tick();
+        completed |= events
+            .iter()
+            .any(|event| matches!(event, styx_app::AppEvent::TorrentCompleted { .. }));
+        if completed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(
+        runtime.snapshot().torrents[0].status,
+        styx_app::TorrentStatus::Seeding
+    );
+}
+
 fn torrent_bytes() -> Vec<u8> {
     let mut top = BTreeMap::new();
     top.insert(
@@ -268,4 +318,130 @@ fn torrent_bytes() -> Vec<u8> {
     );
     top.insert(b"info".to_vec(), BencodeValue::Dict(info));
     encode(&BencodeValue::Dict(top))
+}
+
+fn torrent_bytes_with_announce(announce: &str) -> Vec<u8> {
+    let mut top = BTreeMap::new();
+    top.insert(
+        b"announce".to_vec(),
+        BencodeValue::Bytes(Bytes::copy_from_slice(announce.as_bytes())),
+    );
+    let mut info = BTreeMap::new();
+    info.insert(
+        b"name".to_vec(),
+        BencodeValue::Bytes(Bytes::from_static(b"file.bin")),
+    );
+    info.insert(b"piece length".to_vec(), BencodeValue::Integer(4));
+    info.insert(b"length".to_vec(), BencodeValue::Integer(4));
+    info.insert(
+        b"pieces".to_vec(),
+        BencodeValue::Bytes(Bytes::copy_from_slice(&Sha1::digest(b"abcd"))),
+    );
+    top.insert(b"info".to_vec(), BencodeValue::Dict(info));
+    encode(&BencodeValue::Dict(top))
+}
+
+async fn serve_peer(piece_bytes: Bytes) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut handshake_bytes = [0u8; PEER_HANDSHAKE_LEN];
+        stream.read_exact(&mut handshake_bytes).await.unwrap();
+        let incoming = decode_handshake(&handshake_bytes).unwrap();
+        write_handshake(
+            &mut stream,
+            &Handshake {
+                reserved: ExtensionBits::default(),
+                info_hash: incoming.info_hash,
+                peer_id: PeerId::new([9u8; 20]),
+            },
+        )
+        .await
+        .unwrap();
+        write_message(
+            &mut stream,
+            &PeerMessage::Bitfield {
+                bytes: Bytes::from_static(&[0x80]),
+            },
+        )
+        .await
+        .unwrap();
+        write_message(&mut stream, &PeerMessage::Unchoke)
+            .await
+            .unwrap();
+
+        loop {
+            match styx_proto::read_message(&mut stream, styx_proto::DEFAULT_MAX_PEER_FRAME_LEN)
+                .await
+            {
+                Ok(PeerMessage::Request {
+                    index,
+                    begin,
+                    length,
+                }) => {
+                    assert_eq!(index, 0);
+                    assert_eq!(begin, 0);
+                    assert_eq!(length, piece_bytes.len() as u32);
+                    write_message(
+                        &mut stream,
+                        &PeerMessage::Piece {
+                            index,
+                            begin,
+                            block: piece_bytes,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
+    addr
+}
+
+async fn serve_tracker(peers: Vec<SocketAddr>) -> url::Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await.unwrap();
+        let body = announce_response(&peers);
+        stream.write_all(&http_response(&body)).await.unwrap();
+    });
+    url::Url::parse(&format!("http://{addr}/announce")).unwrap()
+}
+
+fn announce_response(peers: &[SocketAddr]) -> Vec<u8> {
+    let mut dict = BTreeMap::new();
+    dict.insert(b"complete".to_vec(), BencodeValue::Integer(1));
+    dict.insert(b"incomplete".to_vec(), BencodeValue::Integer(0));
+    dict.insert(b"interval".to_vec(), BencodeValue::Integer(1800));
+    dict.insert(
+        b"peers".to_vec(),
+        BencodeValue::Bytes(Bytes::from(compact_peers(peers))),
+    );
+    encode(&BencodeValue::Dict(dict))
+}
+
+fn compact_peers(peers: &[SocketAddr]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for peer in peers {
+        if let SocketAddr::V4(v4) = peer {
+            out.extend_from_slice(&v4.ip().octets());
+            out.extend_from_slice(&v4.port().to_be_bytes());
+        }
+    }
+    out
+}
+
+fn http_response(body: &[u8]) -> Vec<u8> {
+    let mut response =
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+    response.extend_from_slice(body);
+    response
 }

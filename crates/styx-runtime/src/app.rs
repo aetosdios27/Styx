@@ -1,6 +1,4 @@
 use std::collections::{HashMap, VecDeque};
-use std::time::Duration;
-
 use tokio::sync::mpsc;
 
 use styx_app::{
@@ -201,7 +199,8 @@ impl TorrentRuntime for AppRuntime {
                 {
                     if let Some(plan) = self.pending_plans.get(&tor.id).cloned() {
                         let tx = self.bg_tx.clone();
-                        if let Some(handle) = spawn_bg_download(plan, tx, Duration::from_secs(30)) {
+                        let config = self.engine.config().clone();
+                        if let Some(handle) = spawn_bg_download(plan, tx, config) {
                             self.bg_handles.insert(tor.id, handle);
                         }
                     }
