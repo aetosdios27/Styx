@@ -11,6 +11,7 @@ mod intent;
 mod peer;
 mod peer_io;
 mod peer_table;
+mod persist;
 mod rate;
 mod session;
 mod settings;
@@ -31,6 +32,10 @@ pub use engine::RuntimeEngine;
 pub use error::{FailureScope, RetryClass, RuntimeError};
 pub use intent::{IntentState, RollbackRecord, StageIntent};
 pub use peer::{download_piece_from_peer, DownloadedPiece, PeerPieceRequest};
+pub use persist::{
+    PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentState,
+    PERSISTENT_STATE_SCHEMA_VERSION,
+};
 pub use rate::RateCounter;
 pub use session::{PeerSessionDriver, SessionFailure, SessionOutcome};
 pub use settings::SettingsPatch;

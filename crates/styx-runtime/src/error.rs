@@ -69,6 +69,8 @@ pub enum RuntimeError {
     Backpressure { stage: &'static str },
     #[error("runtime task was cancelled")]
     Cancelled,
+    #[error("persistent state error: {0}")]
+    Persistence(&'static str),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -91,6 +93,7 @@ impl RuntimeError {
             Self::Backpressure { .. } | Self::Cancelled | Self::InvalidConfig(_) => {
                 FailureScope::RuntimeGlobal
             }
+            Self::Persistence(_) => FailureScope::RuntimeGlobal,
             Self::NoHttpTracker
             | Self::NoPeers
             | Self::NoWebSeeds
@@ -134,6 +137,7 @@ impl RuntimeError {
             | Self::V2IntegrityCheckFailed(_)
             | Self::UnsupportedWebSeedLayout
             | Self::InvalidConfig(_)
+            | Self::Persistence(_)
             | Self::InvalidTrackerUrl { .. }
             | Self::Cancelled
             | Self::Io(_)
@@ -243,6 +247,10 @@ impl PartialEq for RuntimeError {
                 (Self::Backpressure { stage: left }, Self::Backpressure { stage: right }) if left == right
             )
             || matches!((self, other), (Self::Cancelled, Self::Cancelled))
+            || matches!(
+                (self, other),
+                (Self::Persistence(left), Self::Persistence(right)) if left == right
+            )
             || matches!((self, other), (Self::Io(_), Self::Io(_)))
             || matches!(
                 (self, other),
