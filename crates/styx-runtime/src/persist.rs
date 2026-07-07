@@ -49,7 +49,7 @@ impl PersistentState {
         }
     }
 
-    fn validate(self) -> Result<Self, RuntimeError> {
+    pub(crate) fn validate(self) -> Result<Self, RuntimeError> {
         if self.schema_version != PERSISTENT_STATE_SCHEMA_VERSION {
             return Err(RuntimeError::Persistence(
                 "unsupported persistent state schema version",

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use tokio::sync::mpsc;
 
 use styx_app::{
@@ -15,8 +15,9 @@ use styx_app::{
 
 use crate::{
     driver::{spawn_bg_download, BgEvent},
-    RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, RuntimeSnapshot,
-    TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot, TorrentStatus,
+    PersistentState, PersistentTorrent, PersistentTorrentState, RuntimeCommand, RuntimeConfig,
+    RuntimeEngine, RuntimeError, RuntimeEvent, RuntimeSnapshot, TorrentCommand, TorrentId,
+    TorrentPlan, TorrentSnapshot, TorrentStatus, PERSISTENT_STATE_SCHEMA_VERSION,
 };
 
 const DEFAULT_SPEED_SAMPLES: usize = 60;
@@ -32,6 +33,7 @@ pub struct AppRuntime {
     bg_rx: mpsc::UnboundedReceiver<BgEvent>,
     bg_handles: HashMap<TorrentId, tokio::task::JoinHandle<()>>,
     pending_plans: HashMap<TorrentId, TorrentPlan>,
+    persistent_torrents: BTreeMap<TorrentId, PersistentTorrent>,
 }
 
 impl AppRuntime {
@@ -46,6 +48,7 @@ impl AppRuntime {
             bg_rx,
             bg_handles: HashMap::new(),
             pending_plans: HashMap::new(),
+            persistent_torrents: BTreeMap::new(),
         }
     }
 
@@ -55,6 +58,69 @@ impl AppRuntime {
 
     pub fn new_with_config(config: RuntimeConfig) -> Result<Self, RuntimeError> {
         Ok(Self::new(RuntimeEngine::new(config)?))
+    }
+
+    pub async fn restore_from_state(
+        config: RuntimeConfig,
+        state: PersistentState,
+    ) -> Result<Self, RuntimeError> {
+        let state = state.validate()?;
+        let mut runtime = Self::new_with_config(config)?;
+        for torrent in state.torrents {
+            if !torrent.source_path.exists() {
+                return Err(RuntimeError::Persistence(
+                    "persistent torrent source is missing",
+                ));
+            }
+            let plan = TorrentPlan::from_file(&torrent.source_path, &torrent.destination)?;
+            let id = plan.id;
+            runtime
+                .engine
+                .apply(RuntimeCommand::AddPlan(Box::new(plan.clone())))?;
+            match torrent.state {
+                PersistentTorrentState::Paused => {
+                    runtime
+                        .engine
+                        .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))?;
+                    runtime
+                        .engine
+                        .apply(RuntimeCommand::Torrent(id, TorrentCommand::Pause))?;
+                }
+                PersistentTorrentState::Complete => {
+                    let summary = runtime.engine.resume_verify(id).await?;
+                    if summary.verified == plan.piece_count()
+                        && summary.missing == 0
+                        && summary.failed == 0
+                    {
+                        for event in runtime.engine.replace_with_completed(id)? {
+                            runtime.engine.push_event(event);
+                        }
+                    } else {
+                        runtime
+                            .engine
+                            .apply(RuntimeCommand::Torrent(id, TorrentCommand::Pause))?;
+                    }
+                }
+                PersistentTorrentState::Queued
+                | PersistentTorrentState::Downloading
+                | PersistentTorrentState::Failed => {
+                    runtime.pending_plans.insert(id, plan);
+                    runtime
+                        .engine
+                        .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))?;
+                }
+            }
+            runtime.persistent_torrents.insert(id, torrent);
+        }
+        Ok(runtime)
+    }
+
+    #[must_use]
+    pub fn persistent_state(&mut self) -> PersistentState {
+        PersistentState {
+            schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
+            torrents: self.persistent_torrents.values().cloned().collect(),
+        }
     }
 
     fn apply_add(
@@ -70,7 +136,7 @@ impl AppRuntime {
                 source: io_err,
             },
             RuntimeError::Torrent(parse_err) => AppError::ParseTorrent {
-                path: source,
+                path: source.clone(),
                 source: parse_err,
             },
             other => AppError::Internal(other.to_string()),
@@ -78,6 +144,16 @@ impl AppRuntime {
         let id = plan.id;
         let name = plan.name.clone();
         let info_hash = InfoHashHex::new(*id.as_bytes());
+        self.persistent_torrents.insert(
+            id,
+            PersistentTorrent {
+                source_path: source.clone(),
+                destination: dest.clone(),
+                state: PersistentTorrentState::Downloading,
+                added_at_unix: 0,
+                completed_at_unix: None,
+            },
+        );
         self.pending_plans.insert(id, plan.clone());
         self.engine
             .apply(RuntimeCommand::AddPlan(Box::new(plan)))
@@ -102,6 +178,7 @@ impl TorrentRuntime for AppRuntime {
                     handle.abort();
                 }
                 self.pending_plans.remove(&id);
+                self.persistent_torrents.remove(&id);
                 self.engine
                     .apply(RuntimeCommand::Remove(id))
                     .map_err(map_runtime_error)?;
@@ -115,6 +192,9 @@ impl TorrentRuntime for AppRuntime {
                 self.engine
                     .apply(RuntimeCommand::Torrent(id, TorrentCommand::Pause))
                     .map_err(map_runtime_error)?;
+                if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
+                    torrent.state = PersistentTorrentState::Paused;
+                }
                 Ok(CommandResponse::TorrentPaused {
                     info_hash: InfoHashHex::new(*id.as_bytes()),
                 })
@@ -124,6 +204,9 @@ impl TorrentRuntime for AppRuntime {
                 self.engine
                     .apply(RuntimeCommand::Torrent(id, TorrentCommand::Resume))
                     .map_err(map_runtime_error)?;
+                if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
+                    torrent.state = PersistentTorrentState::Downloading;
+                }
                 Ok(CommandResponse::TorrentResumed {
                     info_hash: InfoHashHex::new(*id.as_bytes()),
                 })
