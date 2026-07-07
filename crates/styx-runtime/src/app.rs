@@ -205,6 +205,11 @@ impl PersistentAppRuntime {
         Ok(events)
     }
 
+    pub fn persist_now(&mut self) -> Result<(), RuntimeError> {
+        let state = self.runtime.persistent_state();
+        self.store.save(&state)
+    }
+
     #[must_use]
     pub fn runtime_mut(&mut self) -> &mut AppRuntime {
         &mut self.runtime

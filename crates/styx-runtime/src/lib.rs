@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod control;
+mod daemon;
 mod download;
 mod driver;
 mod engine;
@@ -27,6 +28,7 @@ mod web_seed;
 pub use app::{AppRuntime, PersistentAppRuntime};
 pub use config::{RuntimeConfig, RuntimeLimits};
 pub use control::{RuntimeCommand, TorrentCommand};
+pub use daemon::{DaemonConfig, DaemonHandle, DaemonRuntime, DaemonStatus};
 pub use download::run_full_v1_download;
 pub use engine::RuntimeEngine;
 pub use error::{FailureScope, RetryClass, RuntimeError};
