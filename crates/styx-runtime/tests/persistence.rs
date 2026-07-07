@@ -9,6 +9,8 @@ use styx_runtime::{
     AppRuntime, PersistentAppRuntime, PersistentState, PersistentStore, PersistentTorrent,
     PersistentTorrentState, RuntimeConfig, RuntimeError,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 #[test]
 fn persistent_state_round_trips_torrent_manifest() {
@@ -245,6 +247,42 @@ async fn status_command_does_not_create_manifest() {
     assert!(!store.state_path().exists());
 }
 
+#[tokio::test]
+async fn completion_event_persists_complete_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let web_seed = serve_web_seed(Bytes::from_static(b"abcd")).await;
+    let torrent = temp.path().join("sample.torrent");
+    let destination = temp.path().join("downloads");
+    std::fs::write(
+        &torrent,
+        torrent_with_web_seed(&[b"abcd".as_slice()], web_seed.as_str()),
+    )
+    .unwrap();
+    let store = PersistentStore::open(temp.path().join("state")).unwrap();
+    let mut runtime = PersistentAppRuntime::open(RuntimeConfig::default(), store.clone())
+        .await
+        .unwrap();
+    runtime
+        .apply_and_persist(styx_app::ControlCommand::Add {
+            source: torrent,
+            destination: Some(destination),
+        })
+        .unwrap();
+
+    for _ in 0..100 {
+        runtime.tick_and_persist().unwrap();
+        if store.load().unwrap().torrents[0].state == PersistentTorrentState::Complete {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(
+        store.load().unwrap().torrents[0].state,
+        PersistentTorrentState::Complete
+    );
+}
+
 fn torrent_from_chunks(chunks: &[&[u8]]) -> Vec<u8> {
     let mut top = BTreeMap::new();
     top.insert(
@@ -268,4 +306,48 @@ fn torrent_from_chunks(chunks: &[&[u8]]) -> Vec<u8> {
     info.insert(b"pieces".to_vec(), BencodeValue::Bytes(Bytes::from(pieces)));
     top.insert(b"info".to_vec(), BencodeValue::Dict(info));
     encode(&BencodeValue::Dict(top))
+}
+
+fn torrent_with_web_seed(chunks: &[&[u8]], web_seed: &str) -> Vec<u8> {
+    let mut top = BTreeMap::new();
+    top.insert(
+        b"url-list".to_vec(),
+        BencodeValue::Bytes(Bytes::copy_from_slice(web_seed.as_bytes())),
+    );
+    let mut info = BTreeMap::new();
+    info.insert(
+        b"name".to_vec(),
+        BencodeValue::Bytes(Bytes::from_static(b"file.bin")),
+    );
+    info.insert(b"piece length".to_vec(), BencodeValue::Integer(4));
+    info.insert(
+        b"length".to_vec(),
+        BencodeValue::Integer(chunks.iter().map(|chunk| chunk.len() as i64).sum()),
+    );
+    let mut pieces = Vec::new();
+    for chunk in chunks {
+        pieces.extend_from_slice(&Sha1::digest(chunk));
+    }
+    info.insert(b"pieces".to_vec(), BencodeValue::Bytes(Bytes::from(pieces)));
+    top.insert(b"info".to_vec(), BencodeValue::Dict(info));
+    encode(&BencodeValue::Dict(top))
+}
+
+async fn serve_web_seed(piece_bytes: Bytes) -> url::Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await.unwrap();
+        let response = format!(
+            "HTTP/1.1 206 Partial Content\r\ncontent-length: {}\r\ncontent-range: bytes 0-{}/{}\r\n\r\n",
+            piece_bytes.len(),
+            piece_bytes.len() - 1,
+            piece_bytes.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.write_all(&piece_bytes).await.unwrap();
+    });
+    url::Url::parse(&format!("http://{addr}/file.bin")).unwrap()
 }

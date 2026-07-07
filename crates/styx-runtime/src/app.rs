@@ -193,6 +193,18 @@ impl PersistentAppRuntime {
         Ok(response)
     }
 
+    pub fn tick_and_persist(&mut self) -> Result<Vec<AppEvent>, AppError> {
+        let before = self.runtime.persistent_state();
+        let events = self.runtime.tick();
+        let after = self.runtime.persistent_state();
+        if after != before {
+            self.store
+                .save(&after)
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+        Ok(events)
+    }
+
     #[must_use]
     pub fn runtime_mut(&mut self) -> &mut AppRuntime {
         &mut self.runtime
@@ -283,6 +295,10 @@ impl TorrentRuntime for AppRuntime {
                 BgEvent::Completed { id } => {
                     self.bg_handles.remove(&id);
                     self.pending_plans.remove(&id);
+                    if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
+                        torrent.state = PersistentTorrentState::Complete;
+                        torrent.completed_at_unix = Some(0);
+                    }
                     if let Ok(events) = self.engine.replace_with_completed(id) {
                         for e in events {
                             self.engine.push_event(e);
@@ -292,6 +308,9 @@ impl TorrentRuntime for AppRuntime {
                 BgEvent::Failed { id, reason } => {
                     self.bg_handles.remove(&id);
                     self.pending_plans.remove(&id);
+                    if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
+                        torrent.state = PersistentTorrentState::Failed;
+                    }
                     self.engine.push_event(RuntimeEvent::TaskFailed {
                         torrent: id,
                         reason,
