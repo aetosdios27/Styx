@@ -84,10 +84,6 @@ impl PeerTable {
             .filter(|p| p.io.is_disconnected())
             .map(|p| (p.key, p.addr))
             .collect();
-        let dead_keys: Vec<PeerKey> = dead.iter().map(|(k, _)| *k).collect();
-        for key in dead_keys {
-            self.remove_peer(key);
-        }
         (all, dead)
     }
 

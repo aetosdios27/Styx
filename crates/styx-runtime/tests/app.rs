@@ -299,6 +299,88 @@ async fn app_runtime_completes_added_torrent_from_tracker_peer() {
     );
 }
 
+#[tokio::test]
+async fn app_runtime_recovers_when_first_peer_disconnects_before_piece() {
+    let temp = tempfile::tempdir().unwrap();
+    let piece_bytes = Bytes::from_static(b"abcd");
+    let bad_peer = serve_disconnect_after_request_peer().await;
+    let good_peer = serve_peer_after_advertise_delay(
+        piece_bytes.clone(),
+        std::time::Duration::from_millis(150),
+    )
+    .await;
+    let tracker = serve_tracker(vec![bad_peer, good_peer]).await;
+    let torrent = temp.path().join("disconnect-recovery.torrent");
+    std::fs::write(&torrent, torrent_bytes_with_announce(tracker.as_str())).unwrap();
+
+    let config = RuntimeConfig {
+        source_timeout: std::time::Duration::from_secs(2),
+        snapshot_interval: std::time::Duration::from_millis(10),
+        ..RuntimeConfig::default()
+    };
+    let engine = RuntimeEngine::new(config).unwrap();
+    let mut runtime = AppRuntime::new(engine);
+
+    use styx_app::ControlCommand;
+    runtime
+        .apply(ControlCommand::Add {
+            source: torrent,
+            destination: Some(temp.path().join("downloads")),
+        })
+        .unwrap();
+
+    tick_until_seeding(&mut runtime).await;
+
+    assert!(
+        runtime
+            .snapshot()
+            .logs
+            .iter()
+            .any(|line| line.message.contains("failed") || line.message.contains("disconnected")),
+        "disconnect recovery should leave a failure/disconnect trail"
+    );
+}
+
+#[tokio::test]
+async fn app_runtime_quarantines_corrupt_peer_and_completes_from_web_seed() {
+    let temp = tempfile::tempdir().unwrap();
+    let corrupt_peer = serve_peer_with_payload(Bytes::from_static(b"wxyz")).await;
+    let tracker = serve_tracker(vec![corrupt_peer]).await;
+    let web_seed = serve_web_seed(Bytes::from_static(b"abcd")).await;
+    let torrent = temp.path().join("corrupt-recovery.torrent");
+    std::fs::write(
+        &torrent,
+        torrent_bytes_with_announce_and_web_seed(tracker.as_str(), web_seed.as_str()),
+    )
+    .unwrap();
+
+    let config = RuntimeConfig {
+        source_timeout: std::time::Duration::from_secs(3),
+        snapshot_interval: std::time::Duration::from_millis(10),
+        ..RuntimeConfig::default()
+    };
+    let engine = RuntimeEngine::new(config).unwrap();
+    let mut runtime = AppRuntime::new(engine);
+
+    use styx_app::ControlCommand;
+    runtime
+        .apply(ControlCommand::Add {
+            source: torrent,
+            destination: Some(temp.path().join("downloads")),
+        })
+        .unwrap();
+
+    tick_until_seeding(&mut runtime).await;
+
+    let logs = runtime.snapshot().logs;
+    assert!(
+        logs.iter().any(|line| {
+            line.message.contains("quarantined") || line.message.contains("failed")
+        }),
+        "corrupt peer recovery should leave a quarantine/source-failure trail; logs: {logs:?}"
+    );
+}
+
 fn torrent_bytes() -> Vec<u8> {
     let mut top = BTreeMap::new();
     top.insert(
@@ -341,7 +423,43 @@ fn torrent_bytes_with_announce(announce: &str) -> Vec<u8> {
     encode(&BencodeValue::Dict(top))
 }
 
+fn torrent_bytes_with_announce_and_web_seed(announce: &str, web_seed: &str) -> Vec<u8> {
+    let mut top = BTreeMap::new();
+    top.insert(
+        b"announce".to_vec(),
+        BencodeValue::Bytes(Bytes::copy_from_slice(announce.as_bytes())),
+    );
+    top.insert(
+        b"url-list".to_vec(),
+        BencodeValue::Bytes(Bytes::copy_from_slice(web_seed.as_bytes())),
+    );
+    let mut info = BTreeMap::new();
+    info.insert(
+        b"name".to_vec(),
+        BencodeValue::Bytes(Bytes::from_static(b"file.bin")),
+    );
+    info.insert(b"piece length".to_vec(), BencodeValue::Integer(4));
+    info.insert(b"length".to_vec(), BencodeValue::Integer(4));
+    info.insert(
+        b"pieces".to_vec(),
+        BencodeValue::Bytes(Bytes::copy_from_slice(&Sha1::digest(b"abcd"))),
+    );
+    top.insert(b"info".to_vec(), BencodeValue::Dict(info));
+    encode(&BencodeValue::Dict(top))
+}
+
 async fn serve_peer(piece_bytes: Bytes) -> SocketAddr {
+    serve_peer_after_advertise_delay(piece_bytes, std::time::Duration::ZERO).await
+}
+
+async fn serve_peer_with_payload(piece_bytes: Bytes) -> SocketAddr {
+    serve_peer_after_advertise_delay(piece_bytes, std::time::Duration::ZERO).await
+}
+
+async fn serve_peer_after_advertise_delay(
+    piece_bytes: Bytes,
+    delay: std::time::Duration,
+) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -359,6 +477,9 @@ async fn serve_peer(piece_bytes: Bytes) -> SocketAddr {
         )
         .await
         .unwrap();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         write_message(
             &mut stream,
             &PeerMessage::Bitfield {
@@ -403,6 +524,53 @@ async fn serve_peer(piece_bytes: Bytes) -> SocketAddr {
     addr
 }
 
+async fn serve_disconnect_after_request_peer() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        handshake_and_advertise(&mut stream).await;
+        loop {
+            match styx_proto::read_message(&mut stream, styx_proto::DEFAULT_MAX_PEER_FRAME_LEN)
+                .await
+            {
+                Ok(PeerMessage::Request { .. }) => {
+                    let _ = stream.shutdown().await;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
+    addr
+}
+
+async fn handshake_and_advertise(stream: &mut tokio::net::TcpStream) {
+    let mut handshake_bytes = [0u8; PEER_HANDSHAKE_LEN];
+    stream.read_exact(&mut handshake_bytes).await.unwrap();
+    let incoming = decode_handshake(&handshake_bytes).unwrap();
+    write_handshake(
+        stream,
+        &Handshake {
+            reserved: ExtensionBits::default(),
+            info_hash: incoming.info_hash,
+            peer_id: PeerId::new([9u8; 20]),
+        },
+    )
+    .await
+    .unwrap();
+    write_message(
+        stream,
+        &PeerMessage::Bitfield {
+            bytes: Bytes::from_static(&[0x80]),
+        },
+    )
+    .await
+    .unwrap();
+    write_message(stream, &PeerMessage::Unchoke).await.unwrap();
+}
+
 async fn serve_tracker(peers: Vec<SocketAddr>) -> url::Url {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -414,6 +582,40 @@ async fn serve_tracker(peers: Vec<SocketAddr>) -> url::Url {
         stream.write_all(&http_response(&body)).await.unwrap();
     });
     url::Url::parse(&format!("http://{addr}/announce")).unwrap()
+}
+
+async fn serve_web_seed(piece_bytes: Bytes) -> url::Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await.unwrap();
+        stream
+            .write_all(&http_response(&piece_bytes))
+            .await
+            .unwrap();
+    });
+    url::Url::parse(&format!("http://{addr}/file.bin")).unwrap()
+}
+
+async fn tick_until_seeding(runtime: &mut AppRuntime) {
+    let mut completed = false;
+    for _ in 0..150 {
+        let events = runtime.tick();
+        completed |= events
+            .iter()
+            .any(|event| matches!(event, styx_app::AppEvent::TorrentCompleted { .. }));
+        if completed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(
+        runtime.snapshot().torrents[0].status,
+        styx_app::TorrentStatus::Seeding
+    );
 }
 
 fn announce_response(peers: &[SocketAddr]) -> Vec<u8> {

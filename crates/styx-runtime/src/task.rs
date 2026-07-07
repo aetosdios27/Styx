@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
@@ -38,6 +39,7 @@ pub struct TorrentTask {
     tracker: HttpTrackerClient,
     pending_verify: Vec<PieceIndex>,
     pending_verify_peers: BTreeMap<PieceIndex, Vec<styx_core::PeerKey>>,
+    pending_verify_peer_addrs: BTreeMap<PieceIndex, Vec<SocketAddr>>,
     last_announce: Option<Instant>,
     announce_interval: Duration,
 }
@@ -76,6 +78,7 @@ impl TorrentTask {
             tracker: HttpTrackerClient::new(512 * 1024),
             pending_verify: Vec::new(),
             pending_verify_peers: BTreeMap::new(),
+            pending_verify_peer_addrs: BTreeMap::new(),
         }
     }
 
@@ -124,6 +127,7 @@ impl TorrentTask {
             tracker: HttpTrackerClient::new(512 * 1024),
             pending_verify: Vec::new(),
             pending_verify_peers: BTreeMap::new(),
+            pending_verify_peer_addrs: BTreeMap::new(),
         })
     }
 
@@ -423,6 +427,7 @@ impl TorrentTask {
             }
         }
         for (key, addr) in dead {
+            self.peers.remove_peer(key);
             let _ = self.manager.remove_peer(key);
             events.push(RuntimeEvent::PeerDisconnected {
                 torrent: self.plan.id,
@@ -498,6 +503,12 @@ impl TorrentTask {
                                     .entry(request.piece)
                                     .or_default()
                                     .push(peer);
+                                if let Some(addr) = self.peers.peer_addr(peer) {
+                                    self.pending_verify_peer_addrs
+                                        .entry(request.piece)
+                                        .or_default()
+                                        .push(addr);
+                                }
                                 if matches!(completion, PieceCompletion::Complete { .. }) {
                                     self.pending_verify.push(request.piece);
                                 }
@@ -520,6 +531,7 @@ impl TorrentTask {
             match self.pieces.verify_and_commit_piece(piece).await {
                 Ok(VerificationResult::Verified { piece: _ }) => {
                     self.pending_verify_peers.remove(&piece);
+                    self.pending_verify_peer_addrs.remove(&piece);
                     let bytes = self.pieces.plan().piece_length(piece).unwrap_or(0) as u64;
                     self.verified_bytes = self.verified_bytes.saturating_add(bytes);
                     let mut cleanup_actions = Vec::new();
@@ -542,10 +554,24 @@ impl TorrentTask {
                 }
                 Ok(VerificationResult::HashMismatch { piece }) => {
                     let peers = self.pending_verify_peers.remove(&piece).unwrap_or_default();
+                    let mut addrs = self
+                        .pending_verify_peer_addrs
+                        .remove(&piece)
+                        .unwrap_or_default();
                     for peer in peers {
-                        let Some(addr) = self.peers.peer_addr(peer) else {
-                            continue;
-                        };
+                        if let Some(addr) = self.peers.peer_addr(peer) {
+                            addrs.push(addr);
+                            self.peers.remove_peer(peer);
+                            let _ = self.manager.remove_peer(peer);
+                            events.push(RuntimeEvent::PeerDisconnected {
+                                torrent: self.plan.id,
+                                addr,
+                            });
+                        }
+                    }
+                    addrs.sort_unstable();
+                    addrs.dedup();
+                    for addr in addrs {
                         if let Some(source) =
                             self.sources.id_for_endpoint(&SourceEndpoint::Peer(addr))
                         {
@@ -553,15 +579,9 @@ impl TorrentTask {
                                 .sources
                                 .record_failure(source, SourceFailure::CorruptData);
                         }
-                        self.peers.remove_peer(peer);
-                        let _ = self.manager.remove_peer(peer);
                         events.push(RuntimeEvent::SourceQuarantined {
                             torrent: self.plan.id,
                             source: addr.to_string(),
-                        });
-                        events.push(RuntimeEvent::PeerDisconnected {
-                            torrent: self.plan.id,
-                            addr,
                         });
                     }
                 }

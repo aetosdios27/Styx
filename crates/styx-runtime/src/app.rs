@@ -187,6 +187,10 @@ impl TorrentRuntime for AppRuntime {
                         reason,
                     });
                 }
+                BgEvent::PeerDisconnected { id, addr } => {
+                    self.engine
+                        .push_event(RuntimeEvent::PeerDisconnected { torrent: id, addr });
+                }
             }
         }
 
@@ -331,6 +335,10 @@ fn map_to_log_line(event: &RuntimeEvent) -> Option<LogLine> {
         } => Some(LogLine {
             level: LogLevel::Info,
             message: format!("torrent {torrent:?} piece {piece} verified ({bytes} bytes)"),
+        }),
+        RuntimeEvent::PeerDisconnected { torrent, addr } => Some(LogLine {
+            level: LogLevel::Warn,
+            message: format!("peer {addr} disconnected for torrent {torrent:?}"),
         }),
         RuntimeEvent::TaskCompleted { torrent } => Some(LogLine {
             level: LogLevel::Info,

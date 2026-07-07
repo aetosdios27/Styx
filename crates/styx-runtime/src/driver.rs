@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use tokio::sync::mpsc;
 
@@ -22,6 +25,10 @@ pub(crate) enum BgEvent {
     },
     Completed {
         id: TorrentId,
+    },
+    PeerDisconnected {
+        id: TorrentId,
+        addr: SocketAddr,
     },
     Failed {
         id: TorrentId,
@@ -172,6 +179,9 @@ fn emit_peer_events(
                     id,
                     reason: reason.clone(),
                 });
+            }
+            RuntimeEvent::PeerDisconnected { addr, .. } => {
+                let _ = tx.send(BgEvent::PeerDisconnected { id, addr: *addr });
             }
             RuntimeEvent::TaskCompleted { .. } => {
                 let _ = tx.send(BgEvent::Completed { id });
