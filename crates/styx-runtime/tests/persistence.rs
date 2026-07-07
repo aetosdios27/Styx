@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use styx_app::TorrentRuntime;
 use styx_proto::{encode, BencodeValue};
 use styx_runtime::{
-    AppRuntime, PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentState,
-    RuntimeConfig, RuntimeError,
+    AppRuntime, PersistentAppRuntime, PersistentState, PersistentStore, PersistentTorrent,
+    PersistentTorrentState, RuntimeConfig, RuntimeError,
 };
 
 #[test]
@@ -167,6 +167,82 @@ async fn persistent_state_returns_restored_torrent_intent() {
         .unwrap();
 
     assert_eq!(runtime.persistent_state(), state);
+}
+
+#[tokio::test]
+async fn add_command_persists_new_torrent_record() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    let destination = temp.path().join("downloads");
+    std::fs::write(&torrent, torrent_from_chunks(&[b"abcd".as_slice()])).unwrap();
+    let store = PersistentStore::open(temp.path().join("state")).unwrap();
+    let mut runtime = PersistentAppRuntime::open(RuntimeConfig::default(), store.clone())
+        .await
+        .unwrap();
+
+    runtime
+        .apply_and_persist(styx_app::ControlCommand::Add {
+            source: torrent.clone(),
+            destination: Some(destination.clone()),
+        })
+        .unwrap();
+
+    let state = store.load().unwrap();
+    assert_eq!(state.torrents[0].source_path, torrent);
+    assert_eq!(state.torrents[0].destination, destination);
+    assert_eq!(state.torrents[0].state, PersistentTorrentState::Downloading);
+}
+
+#[tokio::test]
+async fn pause_and_resume_update_persisted_lifecycle() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    let destination = temp.path().join("downloads");
+    std::fs::write(&torrent, torrent_from_chunks(&[b"abcd".as_slice()])).unwrap();
+    let store = PersistentStore::open(temp.path().join("state")).unwrap();
+    let mut runtime = PersistentAppRuntime::open(RuntimeConfig::default(), store.clone())
+        .await
+        .unwrap();
+    let added = runtime
+        .apply_and_persist(styx_app::ControlCommand::Add {
+            source: torrent,
+            destination: Some(destination),
+        })
+        .unwrap();
+    let styx_app::commands::CommandResponse::TorrentAdded { info_hash, .. } = added else {
+        panic!("expected add response");
+    };
+
+    runtime
+        .apply_and_persist(styx_app::ControlCommand::Pause { info_hash })
+        .unwrap();
+    assert_eq!(
+        store.load().unwrap().torrents[0].state,
+        PersistentTorrentState::Paused
+    );
+
+    runtime
+        .apply_and_persist(styx_app::ControlCommand::Resume { info_hash })
+        .unwrap();
+    assert_eq!(
+        store.load().unwrap().torrents[0].state,
+        PersistentTorrentState::Downloading
+    );
+}
+
+#[tokio::test]
+async fn status_command_does_not_create_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = PersistentStore::open(temp.path().join("state")).unwrap();
+    let mut runtime = PersistentAppRuntime::open(RuntimeConfig::default(), store.clone())
+        .await
+        .unwrap();
+
+    runtime
+        .apply_and_persist(styx_app::ControlCommand::Status)
+        .unwrap();
+
+    assert!(!store.state_path().exists());
 }
 
 fn torrent_from_chunks(chunks: &[&[u8]]) -> Vec<u8> {

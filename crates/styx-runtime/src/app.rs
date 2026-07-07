@@ -15,9 +15,9 @@ use styx_app::{
 
 use crate::{
     driver::{spawn_bg_download, BgEvent},
-    PersistentState, PersistentTorrent, PersistentTorrentState, RuntimeCommand, RuntimeConfig,
-    RuntimeEngine, RuntimeError, RuntimeEvent, RuntimeSnapshot, TorrentCommand, TorrentId,
-    TorrentPlan, TorrentSnapshot, TorrentStatus, PERSISTENT_STATE_SCHEMA_VERSION,
+    PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentState, RuntimeCommand,
+    RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, RuntimeSnapshot, TorrentCommand,
+    TorrentId, TorrentPlan, TorrentSnapshot, TorrentStatus, PERSISTENT_STATE_SCHEMA_VERSION,
 };
 
 const DEFAULT_SPEED_SAMPLES: usize = 60;
@@ -34,6 +34,12 @@ pub struct AppRuntime {
     bg_handles: HashMap<TorrentId, tokio::task::JoinHandle<()>>,
     pending_plans: HashMap<TorrentId, TorrentPlan>,
     persistent_torrents: BTreeMap<TorrentId, PersistentTorrent>,
+}
+
+#[derive(Debug)]
+pub struct PersistentAppRuntime {
+    runtime: AppRuntime,
+    store: PersistentStore,
 }
 
 impl AppRuntime {
@@ -162,6 +168,34 @@ impl AppRuntime {
             .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))
             .map_err(map_runtime_error)?;
         Ok(CommandResponse::TorrentAdded { info_hash, name })
+    }
+}
+
+impl PersistentAppRuntime {
+    pub async fn open(config: RuntimeConfig, store: PersistentStore) -> Result<Self, RuntimeError> {
+        let state = store.load()?;
+        let runtime = AppRuntime::restore_from_state(config, state).await?;
+        Ok(Self { runtime, store })
+    }
+
+    pub fn apply_and_persist(
+        &mut self,
+        command: ControlCommand,
+    ) -> Result<CommandResponse, AppError> {
+        let should_persist = !matches!(command, ControlCommand::Status);
+        let response = self.runtime.apply(command)?;
+        if should_persist {
+            let state = self.runtime.persistent_state();
+            self.store
+                .save(&state)
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+        Ok(response)
+    }
+
+    #[must_use]
+    pub fn runtime_mut(&mut self) -> &mut AppRuntime {
+        &mut self.runtime
     }
 }
 
