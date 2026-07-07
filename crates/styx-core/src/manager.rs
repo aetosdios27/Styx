@@ -119,6 +119,15 @@ impl PeerConnectionManager {
         Ok(actions)
     }
 
+    #[must_use]
+    pub fn seed_count(&self) -> usize {
+        let total = self.torrent.piece_count();
+        self.peers
+            .values()
+            .filter(|s| s.available_pieces().count() == total)
+            .count()
+    }
+
     pub fn mark_piece_verified(&mut self, request: BlockRequest) -> Vec<PeerAction> {
         self.torrent.mark_block_complete(request);
         self.endgame.complete(request)
@@ -378,6 +387,48 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn seed_count_returns_zero_when_no_peers() {
+        let manager = manager();
+        assert_eq!(manager.seed_count(), 0);
+    }
+
+    #[test]
+    fn seed_count_reflects_peer_with_full_bitfield() {
+        let mut manager = manager();
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+        // 4 pieces → full bitfield is 0xF0 (first nibble all 1s)
+        manager
+            .handle_message(
+                PeerKey::new(1),
+                PeerMessage::Bitfield {
+                    bytes: Bytes::from_static(&[0b1111_0000]),
+                },
+                now,
+            )
+            .unwrap();
+        assert_eq!(manager.seed_count(), 1);
+    }
+
+    #[test]
+    fn seed_count_excludes_peers_with_partial_bitfield() {
+        let mut manager = manager();
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+        // Only 1 of 4 pieces
+        manager
+            .handle_message(
+                PeerKey::new(1),
+                PeerMessage::Bitfield {
+                    bytes: Bytes::from_static(&[0b1000_0000]),
+                },
+                now,
+            )
+            .unwrap();
+        assert_eq!(manager.seed_count(), 0);
     }
 
     #[test]

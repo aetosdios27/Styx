@@ -153,11 +153,14 @@ impl TorrentTask {
         let now = Instant::now();
         let needs_peers = self.peers.connected_count() == 0;
         let has_trackers = !self.plan.announce_urls.is_empty();
-        let should_announce = has_trackers && match self.last_announce {
-            Some(last) if !needs_peers => now.duration_since(last) >= self.announce_interval / 2,
-            Some(last) => now.duration_since(last) >= Duration::from_secs(5),
-            None => true,
-        };
+        let should_announce = has_trackers
+            && match self.last_announce {
+                Some(last) if !needs_peers => {
+                    now.duration_since(last) >= self.announce_interval / 2
+                }
+                Some(last) => now.duration_since(last) >= Duration::from_secs(5),
+                None => true,
+            };
 
         if should_announce {
             let request = crate::tracker::build_plan_announce_request(
@@ -169,8 +172,7 @@ impl TorrentTask {
             for url in &self.plan.announce_urls {
                 match self.tracker.announce(url, &request).await {
                     Ok(response) => {
-                        self.announce_interval =
-                            Duration::from_secs(u64::from(response.interval));
+                        self.announce_interval = Duration::from_secs(u64::from(response.interval));
                         for peer in &response.peers {
                             if peer.addr.port() == 0 || peer.addr.ip().is_unspecified() {
                                 continue;
@@ -394,7 +396,7 @@ impl TorrentTask {
         snapshot.down_rate = self.cached_down_rate;
         snapshot.up_rate = self.cached_up_rate;
         snapshot.peers = self.peers.connected_count() as u32;
-        snapshot.seeds = 0;
+        snapshot.seeds = self.manager.seed_count() as u32;
         snapshot
     }
 
@@ -571,7 +573,6 @@ mod tests {
         FileMode, Handshake, InfoHashV1, PeerId, PeerMessage, TorrentInfo, TorrentMetainfo,
         DEFAULT_MAX_PEER_FRAME_LEN,
     };
-
 
     const TEST_INFO_HASH: [u8; 20] = [0u8; 20];
     const VERIFIABLE_INFO_HASH: [u8; 20] = [1u8; 20];
@@ -1114,6 +1115,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn t6_t1_snapshot_reflects_connected_peers() {
+        let plan = make_v1_plan();
+        let config = make_config();
+        let mut task = TorrentTask::new_with_peers(plan, config).unwrap();
+        let info_hash = task.plan.info_hash;
+
+        // Before: snapshot has 0 peers
+        let snap = task.snapshot();
+        assert_eq!(snap.peers, 0);
+
+        // Start 2 mock peer servers
+        let mut addrs = Vec::new();
+        for _ in 0..2 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            addrs.push(addr);
+            let ih = info_hash;
+            tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (mut r, mut w) = stream.into_split();
+                let _ = read_handshake(&mut r, ih).await;
+                let response = Handshake {
+                    reserved: ExtensionBits::default(),
+                    info_hash: ih,
+                    peer_id: PeerId::new([0xFD; 20]),
+                };
+                let _ = write_handshake(&mut w, &response).await;
+            });
+        }
+
+        for addr in &addrs {
+            task.sources
+                .add_candidate(SourceEndpoint::Peer(*addr), SourceKind::Peer)
+                .unwrap();
+        }
+        let _ = task.discover_and_connect_peers().await.unwrap();
+
+        // After: snapshot has 2 peers
+        let snap = task.snapshot();
+        assert_eq!(snap.peers, 2);
+    }
+
+    #[tokio::test]
+    async fn t6_t4_seed_count_reflects_full_bitfield_peers() {
+        let plan = make_v1_plan();
+        let config = make_config();
+        let mut task = TorrentTask::new_with_peers(plan, config).unwrap();
+        let info_hash = task.plan.info_hash;
+
+        // Transition to Downloading so tick() processes messages
+        task.apply(TorrentCommand::Start).unwrap();
+        task.tick().unwrap();
+        assert_eq!(task.status, TorrentStatus::Downloading);
+
+        // Start a seed peer that sends full bitfield immediately
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let ih = info_hash;
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut r, mut w) = stream.into_split();
+            let _ = read_handshake(&mut r, ih).await;
+            let response = Handshake {
+                reserved: ExtensionBits::default(),
+                info_hash: ih,
+                peer_id: PeerId::new([0xFC; 20]),
+            };
+            write_handshake(&mut w, &response).await.unwrap();
+            write_message(
+                &mut w,
+                &PeerMessage::Bitfield {
+                    bytes: vec![0xC0].into(),
+                },
+            )
+            .await
+            .unwrap();
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        });
+
+        task.sources
+            .add_candidate(SourceEndpoint::Peer(addr), SourceKind::Peer)
+            .unwrap();
+        let _ = task.discover_and_connect_peers().await.unwrap();
+
+        // Let bitfield arrive, then tick drains and processes it
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _events = task.tick().unwrap();
+
+        let snap = task.snapshot();
+        assert_eq!(snap.seeds, 1, "expected 1 seed, got {}", snap.seeds);
+    }
+
+    #[tokio::test]
     async fn t5_t1_tracker_announce_feeds_sourcetable_and_connects_peers() {
         let info_hash = InfoHashV1::new(TEST_INFO_HASH);
 
@@ -1168,7 +1265,8 @@ mod tests {
 
         // Create plan pointing at our mock tracker
         let mut tracker_plan = make_v1_plan();
-        tracker_plan.announce_urls = vec![format!("http://{}/announce", tracker_addr).parse().unwrap()];
+        tracker_plan.announce_urls =
+            vec![format!("http://{}/announce", tracker_addr).parse().unwrap()];
         let config = make_config();
         let mut task = TorrentTask::new_with_peers(tracker_plan, config).unwrap();
 
@@ -1180,7 +1278,10 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, RuntimeEvent::SourceFailed { .. }))
             .collect();
-        assert!(source_fails.is_empty(), "unexpected SourceFailed: {source_fails:?}");
+        assert!(
+            source_fails.is_empty(),
+            "unexpected SourceFailed: {source_fails:?}"
+        );
 
         assert_eq!(
             events.len(),

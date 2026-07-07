@@ -67,8 +67,8 @@ pub fn build_plan_announce_request(
         plan.info_hash,
         peer_id,
         port,
-        0,      // uploaded
-        0,      // downloaded
+        0, // uploaded
+        0, // downloaded
         left,
         numwant,
     )
