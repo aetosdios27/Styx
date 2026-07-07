@@ -222,6 +222,12 @@ impl SourceTable {
         Ok(self.entry(source)?.state)
     }
 
+    pub fn id_for_endpoint(&self, endpoint: &SourceEndpoint) -> Option<SourceId> {
+        self.entries
+            .iter()
+            .find_map(|(id, entry)| (entry.candidate.endpoint == *endpoint).then_some(*id))
+    }
+
     fn entry(&self, source: SourceId) -> Result<&SourceEntry, RuntimeError> {
         self.entries.get(&source).ok_or(RuntimeError::SourceFailed {
             source_id: format!("source:{}", source.get()),
