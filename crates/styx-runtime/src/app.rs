@@ -14,7 +14,7 @@ use styx_app::{
 };
 
 use crate::{
-    driver::{spawn_bg_download, BgEvent},
+    driver::{spawn_bg_download, spawn_bg_seed, BgEvent},
     PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentState, RuntimeCommand,
     RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, RuntimeSnapshot, TorrentCommand,
     TorrentId, TorrentPlan, TorrentSnapshot, TorrentStatus, PERSISTENT_STATE_SCHEMA_VERSION,
@@ -101,6 +101,7 @@ impl AppRuntime {
                         for event in runtime.engine.replace_with_completed(id)? {
                             runtime.engine.push_event(event);
                         }
+                        runtime.spawn_seed_worker(id, plan.clone());
                     } else {
                         runtime
                             .engine
@@ -169,6 +170,17 @@ impl AppRuntime {
             .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))
             .map_err(map_runtime_error)?;
         Ok(CommandResponse::TorrentAdded { info_hash, name })
+    }
+
+    fn spawn_seed_worker(&mut self, id: TorrentId, plan: TorrentPlan) {
+        if self.bg_handles.contains_key(&id) {
+            return;
+        }
+        let tx = self.bg_tx.clone();
+        let config = self.engine.config().clone();
+        if let Some(handle) = spawn_bg_seed(plan, tx, config) {
+            self.bg_handles.insert(id, handle);
+        }
     }
 }
 
@@ -257,7 +269,17 @@ impl TorrentRuntime for AppRuntime {
                     .apply(RuntimeCommand::Torrent(id, TorrentCommand::Resume))
                     .map_err(map_runtime_error)?;
                 if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
-                    torrent.state = PersistentTorrentState::Downloading;
+                    let plan = TorrentPlan::from_file(&torrent.source_path, &torrent.destination)
+                        .map_err(map_runtime_error)?;
+                    if self.engine.snapshot().torrents.iter().any(|snapshot| {
+                        snapshot.id == id && snapshot.status == TorrentStatus::Seeding
+                    }) {
+                        torrent.state = PersistentTorrentState::Complete;
+                        self.spawn_seed_worker(id, plan);
+                    } else {
+                        torrent.state = PersistentTorrentState::Downloading;
+                        self.pending_plans.insert(id, plan);
+                    }
                 }
                 Ok(CommandResponse::TorrentResumed {
                     info_hash: InfoHashHex::new(*id.as_bytes()),
@@ -300,7 +322,7 @@ impl TorrentRuntime for AppRuntime {
                 }
                 BgEvent::Completed { id } => {
                     self.bg_handles.remove(&id);
-                    self.pending_plans.remove(&id);
+                    let plan = self.pending_plans.remove(&id);
                     if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
                         torrent.state = PersistentTorrentState::Complete;
                         torrent.completed_at_unix = Some(0);
@@ -309,6 +331,9 @@ impl TorrentRuntime for AppRuntime {
                         for e in events {
                             self.engine.push_event(e);
                         }
+                    }
+                    if let Some(plan) = plan {
+                        self.spawn_seed_worker(id, plan);
                     }
                 }
                 BgEvent::Failed { id, reason } => {
@@ -332,6 +357,9 @@ impl TorrentRuntime for AppRuntime {
                 BgEvent::PeerDisconnected { id, addr } => {
                     self.engine
                         .push_event(RuntimeEvent::PeerDisconnected { torrent: id, addr });
+                }
+                BgEvent::Runtime { event } => {
+                    self.engine.push_event(event);
                 }
             }
         }
@@ -478,9 +506,25 @@ fn map_to_log_line(event: &RuntimeEvent) -> Option<LogLine> {
             level: LogLevel::Info,
             message: format!("torrent {torrent:?} piece {piece} verified ({bytes} bytes)"),
         }),
+        RuntimeEvent::PeerConnected { torrent, addr } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!("peer {addr} connected for torrent {torrent:?}"),
+        }),
         RuntimeEvent::PeerDisconnected { torrent, addr } => Some(LogLine {
             level: LogLevel::Warn,
             message: format!("peer {addr} disconnected for torrent {torrent:?}"),
+        }),
+        RuntimeEvent::BlockUploaded {
+            torrent,
+            peer,
+            piece,
+            bytes,
+            ..
+        } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!(
+                "uploaded {bytes} bytes from piece {piece} to peer {peer} for torrent {torrent:?}"
+            ),
         }),
         RuntimeEvent::TaskCompleted { torrent } => Some(LogLine {
             level: LogLevel::Info,

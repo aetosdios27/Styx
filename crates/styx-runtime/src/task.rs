@@ -150,6 +150,9 @@ impl TorrentTask {
         match command {
             TorrentCommand::Start => self.transition(TorrentStatus::Discovering),
             TorrentCommand::Pause => self.transition(TorrentStatus::Paused),
+            TorrentCommand::Resume if self.verified_bytes == self.plan.total_size => {
+                self.transition(TorrentStatus::Seeding)
+            }
             TorrentCommand::Resume => self.transition(TorrentStatus::Downloading),
             TorrentCommand::Cancel => self.transition(TorrentStatus::Cancelled),
             TorrentCommand::Tick => self.tick(),
@@ -310,6 +313,7 @@ impl TorrentTask {
             events.push(RuntimeEvent::TaskCompleted {
                 torrent: self.plan.id,
             });
+            events.extend(self.start_seeding()?);
         }
         Ok(events)
     }
@@ -374,6 +378,18 @@ impl TorrentTask {
         self.status = TorrentStatus::Complete;
         self.verified_bytes = self.plan.total_size;
         Ok(())
+    }
+
+    pub fn start_seeding(&mut self) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        if self.status == TorrentStatus::Seeding {
+            return Ok(Vec::new());
+        }
+        if self.status != TorrentStatus::Complete {
+            return Err(RuntimeError::InvalidConfig(
+                "torrent must be complete before seeding",
+            ));
+        }
+        self.transition(TorrentStatus::Seeding)
     }
 
     pub async fn resume_verify(&mut self) -> Result<ResumeSummary, RuntimeError> {
@@ -453,6 +469,34 @@ impl TorrentTask {
             events.push(RuntimeEvent::TaskCompleted {
                 torrent: self.plan.id,
             });
+            events.extend(self.start_seeding()?);
+        }
+        Ok(events)
+    }
+
+    pub async fn tick_seed_and_upload(&mut self) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        if self.status != TorrentStatus::Seeding {
+            return Ok(Vec::new());
+        }
+
+        let mut events = Vec::new();
+        let now = Instant::now();
+        let (messages, dead) = self.peers.drain_messages();
+        for (key, msg) in messages {
+            if let Ok(actions) = self.manager.handle_message(key, msg, now) {
+                events.extend(self.execute_actions_with_uploads(actions).await);
+            }
+        }
+        for (key, addr) in dead {
+            self.peers.remove_peer(key);
+            let _ = self.manager.remove_peer(key);
+            events.push(RuntimeEvent::PeerDisconnected {
+                torrent: self.plan.id,
+                addr,
+            });
+        }
+        if let Ok(actions) = self.manager.tick_seed(now) {
+            events.extend(self.execute_actions_with_uploads(actions).await);
         }
         Ok(events)
     }
@@ -702,8 +746,11 @@ fn is_legal_transition(from: TorrentStatus, to: TorrentStatus) -> bool {
             | (TorrentStatus::Downloading, TorrentStatus::Complete)
             | (TorrentStatus::Downloading, TorrentStatus::Cancelled)
             | (TorrentStatus::Paused, TorrentStatus::Downloading)
+            | (TorrentStatus::Paused, TorrentStatus::Seeding)
             | (TorrentStatus::Paused, TorrentStatus::Cancelled)
             | (TorrentStatus::Complete, TorrentStatus::Seeding)
+            | (TorrentStatus::Seeding, TorrentStatus::Paused)
+            | (TorrentStatus::Seeding, TorrentStatus::Cancelled)
     )
 }
 
@@ -1282,7 +1329,7 @@ mod tests {
                 .any(|e| matches!(e, RuntimeEvent::TaskCompleted { .. })),
             "expected TaskCompleted from async peer tick; got: {events:?}"
         );
-        assert_eq!(task.status, TorrentStatus::Complete);
+        assert_eq!(task.status, TorrentStatus::Seeding);
     }
 
     #[tokio::test]
@@ -1826,5 +1873,108 @@ mod tests {
             addr,
         }));
         let _ = peer.await;
+    }
+
+    #[tokio::test]
+    async fn completed_torrent_transitions_to_seeding_when_verified() {
+        let mut task = TorrentTask::new_with_peers(make_verifiable_plan(), make_config()).unwrap();
+
+        let events = task
+            .complete_from_piece_bytes(vec![Bytes::from(vec![0x42u8; 16_384])])
+            .await
+            .unwrap();
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                RuntimeEvent::StateChanged {
+                    from: TorrentStatus::Complete,
+                    to: TorrentStatus::Seeding,
+                    ..
+                }
+            )
+        }));
+        assert_eq!(task.status, TorrentStatus::Seeding);
+    }
+
+    #[tokio::test]
+    async fn seeding_tick_responds_to_interested_requesting_peer() {
+        let mut task = TorrentTask::new_with_peers(make_verifiable_plan(), make_config()).unwrap();
+        task.complete_from_piece_bytes(vec![Bytes::from(vec![0x42u8; 16_384])])
+            .await
+            .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let info_hash = task.plan.info_hash;
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_handshake(&mut stream, info_hash).await.unwrap();
+            write_handshake(
+                &mut stream,
+                &Handshake {
+                    reserved: ExtensionBits::default(),
+                    info_hash,
+                    peer_id: PeerId::new([7; 20]),
+                },
+            )
+            .await
+            .unwrap();
+            write_message(&mut stream, &PeerMessage::Interested)
+                .await
+                .unwrap();
+            let first = read_message(&mut stream, DEFAULT_MAX_PEER_FRAME_LEN)
+                .await
+                .unwrap();
+            write_message(
+                &mut stream,
+                &PeerMessage::Request {
+                    index: 0,
+                    begin: 0,
+                    length: 16_384,
+                },
+            )
+            .await
+            .unwrap();
+            let second = read_message(&mut stream, DEFAULT_MAX_PEER_FRAME_LEN)
+                .await
+                .unwrap();
+            (first, second)
+        });
+        let key = task
+            .peers
+            .connect_peer(addr, info_hash, task.peer_id, Duration::from_secs(2))
+            .await
+            .unwrap();
+        task.manager.add_peer(key).unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = task.tick_seed_and_upload().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let events = task.tick_seed_and_upload().await.unwrap();
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                RuntimeEvent::BlockUploaded {
+                    piece: 0,
+                    bytes: 16_384,
+                    ..
+                }
+            )
+        }));
+        let (first, second) = tokio::time::timeout(Duration::from_secs(2), peer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, PeerMessage::Unchoke);
+        assert_eq!(
+            second,
+            PeerMessage::Piece {
+                index: 0,
+                begin: 0,
+                block: Bytes::from(vec![0x42u8; 16_384]),
+            }
+        );
     }
 }

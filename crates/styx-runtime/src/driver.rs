@@ -30,6 +30,9 @@ pub(crate) enum BgEvent {
         id: TorrentId,
         addr: SocketAddr,
     },
+    Runtime {
+        event: RuntimeEvent,
+    },
     Failed {
         id: TorrentId,
         reason: String,
@@ -46,6 +49,19 @@ pub(crate) fn spawn_bg_download(
     }
     Some(tokio::spawn(async move {
         run_bg_download(plan, tx, config).await;
+    }))
+}
+
+pub(crate) fn spawn_bg_seed(
+    plan: TorrentPlan,
+    tx: mpsc::UnboundedSender<BgEvent>,
+    config: RuntimeConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        run_bg_seed(plan, tx, config).await;
     }))
 }
 
@@ -84,6 +100,98 @@ async fn run_bg_download(
     }
 
     run_web_seed_download(plan, tx, config.piece_timeout).await;
+}
+
+async fn run_bg_seed(plan: TorrentPlan, tx: mpsc::UnboundedSender<BgEvent>, config: RuntimeConfig) {
+    let id = plan.id;
+    let expected_pieces = plan.piece_count();
+    let config = match config.validate() {
+        Ok(config) => config,
+        Err(err) => {
+            let _ = tx.send(BgEvent::Failed {
+                id,
+                reason: err.to_string(),
+            });
+            return;
+        }
+    };
+    let mut task = match TorrentTask::new_with_peers(plan, config.clone()) {
+        Ok(task) => task,
+        Err(err) => {
+            let _ = tx.send(BgEvent::Failed {
+                id,
+                reason: err.to_string(),
+            });
+            return;
+        }
+    };
+    match task.resume_verify().await {
+        Ok(summary)
+            if summary.verified == expected_pieces
+                && summary.missing == 0
+                && summary.failed == 0 => {}
+        Ok(_) => {
+            let _ = tx.send(BgEvent::Failed {
+                id,
+                reason: "seed data failed resume verification".to_owned(),
+            });
+            return;
+        }
+        Err(err) => {
+            let _ = tx.send(BgEvent::Failed {
+                id,
+                reason: err.to_string(),
+            });
+            return;
+        }
+    }
+    if let Err(err) = task
+        .set_status_complete()
+        .and_then(|_| task.start_seeding().map(drop))
+    {
+        let _ = tx.send(BgEvent::Failed {
+            id,
+            reason: err.to_string(),
+        });
+        return;
+    }
+
+    let tick_interval = config.snapshot_interval.min(Duration::from_millis(250));
+    loop {
+        let events = match task.discover_and_connect_peers().await {
+            Ok(mut events) => match task.tick_seed_and_upload().await {
+                Ok(tick_events) => {
+                    events.extend(tick_events);
+                    events
+                }
+                Err(err) => {
+                    let _ = tx.send(BgEvent::Failed {
+                        id,
+                        reason: err.to_string(),
+                    });
+                    return;
+                }
+            },
+            Err(err) => {
+                let _ = tx.send(BgEvent::Failed {
+                    id,
+                    reason: err.to_string(),
+                });
+                return;
+            }
+        };
+        for event in events {
+            match event {
+                RuntimeEvent::PeerDisconnected { addr, .. } => {
+                    let _ = tx.send(BgEvent::PeerDisconnected { id, addr });
+                }
+                other => {
+                    let _ = tx.send(BgEvent::Runtime { event: other });
+                }
+            }
+        }
+        tokio::time::sleep(tick_interval).await;
+    }
 }
 
 enum PeerAttempt {

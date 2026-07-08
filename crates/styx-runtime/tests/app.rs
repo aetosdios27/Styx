@@ -381,6 +381,58 @@ async fn app_runtime_quarantines_corrupt_peer_and_completes_from_web_seed() {
     );
 }
 
+#[tokio::test]
+async fn app_runtime_seeds_completed_torrent_to_interested_peer() {
+    let temp = tempfile::tempdir().unwrap();
+    let piece_bytes = Bytes::from_static(b"abcd");
+    let mut leecher = serve_interested_leecher(piece_bytes.clone()).await;
+    let tracker = serve_tracker_sequence(vec![Vec::new(), vec![leecher.addr]]).await;
+    let web_seed = serve_web_seed(piece_bytes.clone()).await;
+    let torrent = temp.path().join("seed-after-complete.torrent");
+    std::fs::write(
+        &torrent,
+        torrent_bytes_with_announce_and_web_seed(tracker.as_str(), web_seed.as_str()),
+    )
+    .unwrap();
+    let parsed_plan = styx_runtime::TorrentPlan::from_file(&torrent, temp.path()).unwrap();
+    assert_eq!(parsed_plan.announce_urls, vec![tracker.clone()]);
+
+    let config = RuntimeConfig {
+        source_timeout: std::time::Duration::from_millis(120),
+        snapshot_interval: std::time::Duration::from_millis(10),
+        ..RuntimeConfig::default()
+    };
+    let engine = RuntimeEngine::new(config).unwrap();
+    let mut runtime = AppRuntime::new(engine);
+
+    runtime
+        .apply(styx_app::ControlCommand::Add {
+            source: torrent,
+            destination: Some(temp.path().join("downloads")),
+        })
+        .unwrap();
+
+    for _ in 0..200 {
+        let _ = runtime.tick();
+        match leecher.rx.try_recv() {
+            Ok(received) => {
+                assert_eq!(received, piece_bytes);
+                return;
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                panic!("interested leecher task closed before receiving a piece");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let snapshot = runtime.snapshot();
+    panic!(
+        "interested leecher did not receive a seeded piece from AppRuntime; snapshot: {snapshot:?}"
+    );
+}
+
 fn torrent_bytes() -> Vec<u8> {
     let mut top = BTreeMap::new();
     top.insert(
@@ -582,6 +634,73 @@ async fn serve_tracker(peers: Vec<SocketAddr>) -> url::Url {
         stream.write_all(&http_response(&body)).await.unwrap();
     });
     url::Url::parse(&format!("http://{addr}/announce")).unwrap()
+}
+
+async fn serve_tracker_sequence(peer_batches: Vec<Vec<SocketAddr>>) -> url::Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for peers in peer_batches {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).await.unwrap();
+            let body = announce_response(&peers);
+            stream.write_all(&http_response(&body)).await.unwrap();
+        }
+    });
+    url::Url::parse(&format!("http://{addr}/announce")).unwrap()
+}
+
+struct LeecherProbe {
+    addr: SocketAddr,
+    rx: tokio::sync::oneshot::Receiver<Bytes>,
+}
+
+async fn serve_interested_leecher(expected_piece: Bytes) -> LeecherProbe {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut handshake_bytes = [0u8; PEER_HANDSHAKE_LEN];
+        stream.read_exact(&mut handshake_bytes).await.unwrap();
+        let incoming = decode_handshake(&handshake_bytes).unwrap();
+        write_handshake(
+            &mut stream,
+            &Handshake {
+                reserved: ExtensionBits::default(),
+                info_hash: incoming.info_hash,
+                peer_id: PeerId::new([8u8; 20]),
+            },
+        )
+        .await
+        .unwrap();
+        write_message(&mut stream, &PeerMessage::Interested)
+            .await
+            .unwrap();
+        let first = styx_proto::read_message(&mut stream, styx_proto::DEFAULT_MAX_PEER_FRAME_LEN)
+            .await
+            .unwrap();
+        assert_eq!(first, PeerMessage::Unchoke);
+        write_message(
+            &mut stream,
+            &PeerMessage::Request {
+                index: 0,
+                begin: 0,
+                length: expected_piece.len() as u32,
+            },
+        )
+        .await
+        .unwrap();
+        let piece = styx_proto::read_message(&mut stream, styx_proto::DEFAULT_MAX_PEER_FRAME_LEN)
+            .await
+            .unwrap();
+        let PeerMessage::Piece { block, .. } = piece else {
+            panic!("expected piece message, got {piece:?}");
+        };
+        let _ = tx.send(block);
+    });
+    LeecherProbe { addr, rx }
 }
 
 async fn serve_web_seed(piece_bytes: Bytes) -> url::Url {

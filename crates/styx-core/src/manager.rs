@@ -26,6 +26,7 @@ pub struct PeerConnectionManager {
     picker: PiecePicker,
     endgame: EndgameController,
     rng: ChaCha8Rng,
+    upload_interest_dirty: bool,
 }
 
 impl PeerConnectionManager {
@@ -42,6 +43,7 @@ impl PeerConnectionManager {
             picker: PiecePicker::new(config.startup_random_pieces),
             endgame: EndgameController::new(),
             rng: ChaCha8Rng::seed_from_u64(0x57_59_58),
+            upload_interest_dirty: false,
         })
     }
 
@@ -107,6 +109,12 @@ impl PeerConnectionManager {
             .get_mut(&peer)
             .ok_or(CoreError::UnknownPeer { peer })?;
         let mut actions = session.apply_message(message, now, self.torrent.piece_count())?;
+        if actions
+            .iter()
+            .any(|action| matches!(action, PeerAction::RecordInterest { .. }))
+        {
+            self.upload_interest_dirty = true;
+        }
         if session.are_we_interested() {
             actions.push(PeerAction::SendMessage {
                 peer,
@@ -139,12 +147,14 @@ impl PeerConnectionManager {
     pub fn tick_seed(&mut self, now: Instant) -> Result<Vec<PeerAction>, CoreError> {
         let mut actions = Vec::new();
         let mut peer_list = self.peers.values().cloned().collect::<Vec<_>>();
-        actions.extend(self.choke.recalculate(
-            &mut peer_list,
-            TransferMode::Seeding,
-            now,
-            &mut self.rng,
-        ));
+        actions.extend(if self.upload_interest_dirty {
+            self.upload_interest_dirty = false;
+            self.choke
+                .force_recalculate(&mut peer_list, TransferMode::Seeding, now, &mut self.rng)
+        } else {
+            self.choke
+                .recalculate(&mut peer_list, TransferMode::Seeding, now, &mut self.rng)
+        });
         for peer in peer_list {
             if let Some(stored) = self.peers.get_mut(&peer.key()) {
                 stored.set_we_choke(peer.are_we_choking());
@@ -604,6 +614,38 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn seed_tick_unchokes_peer_that_becomes_interested_after_initial_tick() {
+        let mut manager = manager_with_config(PeerManagerConfig {
+            upload_slots: 1,
+            ..PeerManagerConfig::default()
+        });
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+
+        let initial = manager.tick_seed(now).unwrap();
+        assert!(initial.is_empty());
+
+        manager
+            .handle_message(
+                PeerKey::new(1),
+                PeerMessage::Interested,
+                now + Duration::from_millis(1),
+            )
+            .unwrap();
+        let actions = manager.tick_seed(now + Duration::from_millis(2)).unwrap();
+
+        assert!(actions.iter().any(|action| {
+            matches!(
+                action,
+                PeerAction::SendMessage {
+                    peer,
+                    message: PeerMessage::Unchoke
+                } if *peer == PeerKey::new(1)
+            )
+        }));
     }
 
     #[test]

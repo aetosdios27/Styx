@@ -61,7 +61,7 @@ async fn runtime_engine_rechecks_existing_pieces_before_resume_completion() {
 
     assert_eq!(
         resumed.snapshot().torrents[0].status,
-        TorrentStatus::Complete
+        TorrentStatus::Seeding
     );
     assert_eq!(
         tokio::fs::read(destination.join("file.bin")).await.unwrap(),

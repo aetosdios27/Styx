@@ -64,6 +64,17 @@ impl ChokeController {
 
         actions
     }
+
+    pub fn force_recalculate(
+        &mut self,
+        peers: &mut [PeerSession],
+        mode: TransferMode,
+        now: Instant,
+        rng: &mut ChaCha8Rng,
+    ) -> Vec<PeerAction> {
+        self.last_regular = now - self.config.choke_interval;
+        self.recalculate(peers, mode, now, rng)
+    }
 }
 
 fn regular_slots(

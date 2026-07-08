@@ -271,6 +271,7 @@ impl RuntimeEngine {
         let total_size = plan.total_size;
         let mut task = TorrentTask::new(*plan);
         task.set_status_complete()?;
+        events.extend(task.start_seeding()?);
         self.tasks.insert(id, task);
         events.push(RuntimeEvent::TorrentAdded { torrent: id });
         events.push(RuntimeEvent::ProgressUpdated {

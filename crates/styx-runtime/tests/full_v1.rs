@@ -38,7 +38,7 @@ async fn runtime_engine_completes_three_piece_v1_torrent_from_piece_bytes() {
         .unwrap();
 
     let snapshot = engine.snapshot();
-    assert_eq!(snapshot.torrents[0].status, TorrentStatus::Complete);
+    assert_eq!(snapshot.torrents[0].status, TorrentStatus::Seeding);
     assert_eq!(snapshot.torrents[0].verified_bytes, 10);
     assert_eq!(snapshot.torrents[0].progress(), 1.0);
     assert_eq!(
@@ -97,10 +97,7 @@ async fn runtime_engine_quarantines_corrupt_source_then_completes_from_good_sour
         .await
         .unwrap();
 
-    assert_eq!(
-        engine.snapshot().torrents[0].status,
-        TorrentStatus::Complete
-    );
+    assert_eq!(engine.snapshot().torrents[0].status, TorrentStatus::Seeding);
     assert!(engine
         .drain_events()
         .iter()
