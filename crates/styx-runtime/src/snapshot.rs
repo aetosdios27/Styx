@@ -92,6 +92,13 @@ pub enum RuntimeEvent {
         torrent: TorrentId,
         addr: std::net::SocketAddr,
     },
+    BlockUploaded {
+        torrent: TorrentId,
+        peer: std::net::SocketAddr,
+        piece: u32,
+        offset: u32,
+        bytes: u32,
+    },
     IntentDeclared {
         torrent: Option<TorrentId>,
         kind: &'static str,
@@ -179,6 +186,7 @@ impl RuntimeEvent {
             Self::TaskCompleted { .. } => "task_completed",
             Self::PeerConnected { .. } => "peer_connected",
             Self::PeerDisconnected { .. } => "peer_disconnected",
+            Self::BlockUploaded { .. } => "block_uploaded",
             Self::IntentDeclared { .. } => "intent_declared",
             Self::ValidationStarted => "validation_started",
             Self::ValidationFailed { .. } => "validation_failed",

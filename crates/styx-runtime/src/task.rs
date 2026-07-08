@@ -10,7 +10,7 @@ use styx_disk::{
     block_specs_for_piece, BlockSpec, PieceCompletion, PieceIndex, PieceManager, ResumeSummary,
     VerificationResult,
 };
-use styx_proto::PeerId;
+use styx_proto::{PeerId, PeerMessage};
 
 use styx_tracker::HttpTrackerClient;
 
@@ -517,6 +517,79 @@ impl TorrentTask {
                     }
                 }
                 PeerAction::CancelDuplicate { .. } | PeerAction::RecordInterest { .. } => {}
+                PeerAction::ServeBlock { .. } => {}
+            }
+        }
+        events
+    }
+
+    pub async fn execute_actions_with_uploads(
+        &mut self,
+        actions: Vec<PeerAction>,
+    ) -> Vec<RuntimeEvent> {
+        let mut events = Vec::new();
+        for action in actions {
+            match action {
+                PeerAction::ServeBlock { peer, request } => {
+                    let Some(addr) = self.peers.peer_addr(peer) else {
+                        continue;
+                    };
+                    let piece_length = match self.pieces.plan().piece_length(request.piece) {
+                        Ok(length) => length,
+                        Err(_) => continue,
+                    };
+                    let block = match BlockSpec::new(
+                        request.piece,
+                        request.offset,
+                        request.length,
+                        piece_length,
+                    ) {
+                        Ok(block) => block,
+                        Err(_) => continue,
+                    };
+                    let bytes = match self.pieces.read_verified_block(block).await {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            self.peers.remove_peer(peer);
+                            let _ = self.manager.remove_peer(peer);
+                            events.push(RuntimeEvent::PeerDisconnected {
+                                torrent: self.plan.id,
+                                addr,
+                            });
+                            continue;
+                        }
+                    };
+                    let byte_count = bytes.len() as u64;
+                    let Ok(uploaded_len) = u32::try_from(byte_count) else {
+                        continue;
+                    };
+                    if self
+                        .peers
+                        .send_message(
+                            peer,
+                            PeerMessage::Piece {
+                                index: request.piece.get(),
+                                begin: request.offset.get(),
+                                block: bytes,
+                            },
+                        )
+                        .is_ok()
+                    {
+                        let now = Instant::now();
+                        self.up_rate.record(now, byte_count);
+                        let _ = self.manager.record_uploaded(peer, byte_count, now);
+                        events.push(RuntimeEvent::BlockUploaded {
+                            torrent: self.plan.id,
+                            peer: addr,
+                            piece: request.piece.get(),
+                            offset: request.offset.get(),
+                            bytes: uploaded_len,
+                        });
+                    }
+                }
+                other => {
+                    events.extend(self.execute_actions(vec![other]));
+                }
             }
         }
         events
@@ -645,7 +718,7 @@ mod tests {
     use super::*;
     use crate::{SourceKind, SourceState};
     use sha1::{Digest, Sha1};
-    use styx_disk::DiskPlan;
+    use styx_disk::{BlockLength, BlockOffset, DiskPlan};
     use styx_proto::{
         read_handshake, read_message, write_handshake, write_message, BencodeValue, ExtensionBits,
         FileMode, Handshake, InfoHashV1, PeerId, PeerMessage, TorrentInfo, TorrentMetainfo,
@@ -1628,5 +1701,130 @@ mod tests {
             !disconnect_events.is_empty(),
             "expected at least one PeerDisconnected event; got: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn seeding_task_sends_piece_for_valid_request() {
+        let mut task = TorrentTask::new_with_peers(make_verifiable_plan(), make_config()).unwrap();
+        let piece = PieceIndex::new(0);
+        task.accept_piece_blocks(
+            piece,
+            vec![(
+                BlockSpec::new(
+                    piece,
+                    BlockOffset::new(0),
+                    BlockLength::new(16_384).unwrap(),
+                    16_384,
+                )
+                .unwrap(),
+                Bytes::from(vec![0x42u8; 16_384]),
+            )],
+        )
+        .await
+        .unwrap();
+        task.verify_completed_pieces().await.unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let info_hash = task.plan.info_hash;
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_handshake(&mut stream, info_hash).await.unwrap();
+            write_handshake(
+                &mut stream,
+                &Handshake {
+                    reserved: ExtensionBits::default(),
+                    info_hash,
+                    peer_id: PeerId::new([9; 20]),
+                },
+            )
+            .await
+            .unwrap();
+            read_message(&mut stream, DEFAULT_MAX_PEER_FRAME_LEN)
+                .await
+                .unwrap()
+        });
+        let key = task
+            .peers
+            .connect_peer(addr, info_hash, task.peer_id, Duration::from_secs(2))
+            .await
+            .unwrap();
+
+        let events = task
+            .execute_actions_with_uploads(vec![PeerAction::ServeBlock {
+                peer: key,
+                request: BlockRequest::new(
+                    piece,
+                    BlockOffset::new(0),
+                    BlockLength::new(16_384).unwrap(),
+                ),
+            }])
+            .await;
+
+        let message = tokio::time::timeout(Duration::from_secs(2), peer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(events.contains(&RuntimeEvent::BlockUploaded {
+            torrent: task.plan.id,
+            peer: addr,
+            piece: 0,
+            offset: 0,
+            bytes: 16_384,
+        }));
+        assert_eq!(
+            message,
+            PeerMessage::Piece {
+                index: 0,
+                begin: 0,
+                block: Bytes::from(vec![0x42u8; 16_384]),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn seeding_task_rejects_request_for_unverified_piece() {
+        let mut task = TorrentTask::new_with_peers(make_verifiable_plan(), make_config()).unwrap();
+        let piece = PieceIndex::new(0);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let info_hash = task.plan.info_hash;
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_handshake(&mut stream, info_hash).await.unwrap();
+            write_handshake(
+                &mut stream,
+                &Handshake {
+                    reserved: ExtensionBits::default(),
+                    info_hash,
+                    peer_id: PeerId::new([8; 20]),
+                },
+            )
+            .await
+            .unwrap();
+            read_message(&mut stream, DEFAULT_MAX_PEER_FRAME_LEN).await
+        });
+        let key = task
+            .peers
+            .connect_peer(addr, info_hash, task.peer_id, Duration::from_secs(2))
+            .await
+            .unwrap();
+
+        let events = task
+            .execute_actions_with_uploads(vec![PeerAction::ServeBlock {
+                peer: key,
+                request: BlockRequest::new(
+                    piece,
+                    BlockOffset::new(0),
+                    BlockLength::new(16).unwrap(),
+                ),
+            }])
+            .await;
+
+        assert!(events.contains(&RuntimeEvent::PeerDisconnected {
+            torrent: task.plan.id,
+            addr,
+        }));
+        let _ = peer.await;
     }
 }
