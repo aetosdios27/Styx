@@ -5,6 +5,7 @@
 //! v1 metainfo parsing plus peer-wire handshake and message framing.
 
 pub mod bencode;
+pub mod extension;
 pub mod file_tree;
 pub mod hash_msg;
 pub mod hybrid;
@@ -14,6 +15,9 @@ pub mod metainfo;
 pub mod peer;
 
 pub use bencode::{decode, decode_with_span, encode, BencodeError, BencodeValue, DecodedBencode};
+pub use extension::{
+    decode_extension_handshake, encode_extension_handshake, ExtensionError, ExtensionHandshake,
+};
 pub use file_tree::{FileTreeError, V2FileEntry, V2FileTree, V2FileTreeNode, V2FlatFile};
 pub use hash_msg::{
     HashMsgError, HashReject, HashRequest, HashesMessage, HASHES_ID, HASH_REJECT_ID,
