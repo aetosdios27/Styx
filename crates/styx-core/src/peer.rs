@@ -147,7 +147,9 @@ impl PeerSession {
             PeerMessage::KeepAlive
             | PeerMessage::Request { .. }
             | PeerMessage::Piece { .. }
-            | PeerMessage::Cancel { .. } => {}
+            | PeerMessage::Cancel { .. }
+            | PeerMessage::Port { .. }
+            | PeerMessage::Extended { .. } => {}
             PeerMessage::HashRequest(_) | PeerMessage::Hashes(_) | PeerMessage::HashReject(_) => {}
         }
         Ok(Vec::new())
