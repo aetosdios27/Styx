@@ -37,6 +37,22 @@ impl TorrentState {
         self.piece_count
     }
 
+    pub fn block_request(&self, index: u32, begin: u32, length: u32) -> Option<BlockRequest> {
+        if index as usize >= self.piece_count {
+            return None;
+        }
+        let length = BlockLength::new(length).ok()?;
+        let end = begin.checked_add(length.get())?;
+        if begin >= self.piece_length || end > self.piece_length {
+            return None;
+        }
+        Some(BlockRequest::new(
+            PieceIndex::new(index),
+            BlockOffset::new(begin),
+            length,
+        ))
+    }
+
     pub fn mark_verified(&mut self, piece: PieceIndex) {
         self.verified.insert(piece);
     }

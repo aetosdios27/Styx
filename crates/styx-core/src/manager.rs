@@ -21,6 +21,7 @@ pub struct PeerConnectionManager {
     torrent: TorrentState,
     peers: BTreeMap<PeerKey, PeerSession>,
     pipelines: BTreeMap<PeerKey, RequestPipeline>,
+    pending_uploads: BTreeMap<PeerKey, BTreeSet<BlockRequest>>,
     choke: ChokeController,
     picker: PiecePicker,
     endgame: EndgameController,
@@ -36,6 +37,7 @@ impl PeerConnectionManager {
             torrent,
             peers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
+            pending_uploads: BTreeMap::new(),
             choke: ChokeController::new(config, now),
             picker: PiecePicker::new(config.startup_random_pieces),
             endgame: EndgameController::new(),
@@ -64,6 +66,7 @@ impl PeerConnectionManager {
             return Err(CoreError::UnknownPeer { peer });
         }
         self.pipelines.remove(&peer);
+        self.pending_uploads.remove(&peer);
         Ok(vec![PeerAction::Disconnect {
             peer,
             reason: DisconnectReason::Removed,
@@ -83,6 +86,20 @@ impl PeerConnectionManager {
         } = message
         {
             return self.handle_piece(peer, index, begin, block, now);
+        }
+
+        match message {
+            PeerMessage::Request {
+                index,
+                begin,
+                length,
+            } => return self.handle_upload_request(peer, index, begin, length),
+            PeerMessage::Cancel {
+                index,
+                begin,
+                length,
+            } => return self.handle_upload_cancel(peer, index, begin, length),
+            _ => {}
         }
 
         let session = self
@@ -117,6 +134,38 @@ impl PeerConnectionManager {
         actions.extend(self.request_blocks(now)?);
         actions.extend(self.endgame_actions());
         Ok(actions)
+    }
+
+    pub fn tick_seed(&mut self, now: Instant) -> Result<Vec<PeerAction>, CoreError> {
+        let mut actions = Vec::new();
+        let mut peer_list = self.peers.values().cloned().collect::<Vec<_>>();
+        actions.extend(self.choke.recalculate(
+            &mut peer_list,
+            TransferMode::Seeding,
+            now,
+            &mut self.rng,
+        ));
+        for peer in peer_list {
+            if let Some(stored) = self.peers.get_mut(&peer.key()) {
+                stored.set_we_choke(peer.are_we_choking());
+            }
+        }
+        actions.extend(self.drain_ready_uploads());
+        Ok(actions)
+    }
+
+    pub fn record_uploaded(
+        &mut self,
+        peer: PeerKey,
+        bytes: u64,
+        now: Instant,
+    ) -> Result<(), CoreError> {
+        let session = self
+            .peers
+            .get_mut(&peer)
+            .ok_or(CoreError::UnknownPeer { peer })?;
+        session.record_upload(now, bytes);
+        Ok(())
     }
 
     #[must_use]
@@ -159,6 +208,55 @@ impl PeerConnectionManager {
             request,
             bytes: block,
         }])
+    }
+
+    fn handle_upload_request(
+        &mut self,
+        peer: PeerKey,
+        index: u32,
+        begin: u32,
+        length: u32,
+    ) -> Result<Vec<PeerAction>, CoreError> {
+        let request = self.torrent.block_request(index, begin, length).ok_or(
+            CoreError::InvalidPeerMessage {
+                reason: "request block is outside torrent bounds",
+            },
+        )?;
+        let session = self
+            .peers
+            .get(&peer)
+            .ok_or(CoreError::UnknownPeer { peer })?;
+        if session.are_we_choking() {
+            return Ok(Vec::new());
+        }
+        self.pending_uploads
+            .entry(peer)
+            .or_default()
+            .insert(request);
+        Ok(Vec::new())
+    }
+
+    fn handle_upload_cancel(
+        &mut self,
+        peer: PeerKey,
+        index: u32,
+        begin: u32,
+        length: u32,
+    ) -> Result<Vec<PeerAction>, CoreError> {
+        let request = self.torrent.block_request(index, begin, length).ok_or(
+            CoreError::InvalidPeerMessage {
+                reason: "cancel block is outside torrent bounds",
+            },
+        )?;
+        let uploads = self
+            .pending_uploads
+            .get_mut(&peer)
+            .ok_or(CoreError::UnknownPeer { peer })?;
+        uploads.remove(&request);
+        if uploads.is_empty() {
+            self.pending_uploads.remove(&peer);
+        }
+        Ok(Vec::new())
     }
 
     fn request_blocks(&mut self, now: Instant) -> Result<Vec<PeerAction>, CoreError> {
@@ -244,6 +342,28 @@ impl PeerConnectionManager {
         let peers = self.peers.values().cloned().collect::<Vec<_>>();
         self.endgame.duplicate_requests(&missing, &assigned, &peers)
     }
+
+    fn drain_ready_uploads(&mut self) -> Vec<PeerAction> {
+        let mut actions = Vec::new();
+        let peers = self.pending_uploads.keys().copied().collect::<Vec<_>>();
+        for peer in peers {
+            let Some(session) = self.peers.get(&peer) else {
+                self.pending_uploads.remove(&peer);
+                continue;
+            };
+            if session.are_we_choking() {
+                continue;
+            }
+            if let Some(requests) = self.pending_uploads.remove(&peer) {
+                actions.extend(
+                    requests
+                        .into_iter()
+                        .map(|request| PeerAction::ServeBlock { peer, request }),
+                );
+            }
+        }
+        actions
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +380,10 @@ mod tests {
             startup_random_pieces: 0,
             ..PeerManagerConfig::default()
         };
+        PeerConnectionManager::new(config, TorrentState::new(4, 80, 16)).unwrap()
+    }
+
+    fn manager_with_config(config: PeerManagerConfig) -> PeerConnectionManager {
         PeerConnectionManager::new(config, TorrentState::new(4, 80, 16)).unwrap()
     }
 
@@ -445,5 +569,192 @@ mod tests {
                 peer: PeerKey::new(99)
             }
         );
+    }
+
+    #[test]
+    fn seed_tick_unchokes_interested_peers_up_to_upload_slots() {
+        let config = PeerManagerConfig {
+            upload_slots: 1,
+            startup_random_pieces: 0,
+            ..PeerManagerConfig::default()
+        };
+        let mut manager = manager_with_config(config);
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+        manager.add_peer(PeerKey::new(2)).unwrap();
+        manager
+            .handle_message(PeerKey::new(1), PeerMessage::Interested, now)
+            .unwrap();
+        manager
+            .handle_message(PeerKey::new(2), PeerMessage::Interested, now)
+            .unwrap();
+
+        let actions = manager.tick_seed(now).unwrap();
+
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| matches!(
+                    action,
+                    PeerAction::SendMessage {
+                        message: PeerMessage::Unchoke,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn seed_tick_chokes_uninterested_peer_without_consuming_slot() {
+        let config = PeerManagerConfig {
+            upload_slots: 1,
+            startup_random_pieces: 0,
+            ..PeerManagerConfig::default()
+        };
+        let mut manager = manager_with_config(config);
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+        manager.add_peer(PeerKey::new(2)).unwrap();
+        manager
+            .handle_message(PeerKey::new(1), PeerMessage::Interested, now)
+            .unwrap();
+        manager
+            .handle_message(PeerKey::new(2), PeerMessage::Interested, now)
+            .unwrap();
+        let _ = manager.tick_seed(now).unwrap();
+        manager
+            .handle_message(PeerKey::new(1), PeerMessage::NotInterested, now)
+            .unwrap();
+
+        let actions = manager.tick_seed(now + config.choke_interval).unwrap();
+
+        assert!(actions.contains(&PeerAction::SendMessage {
+            peer: PeerKey::new(1),
+            message: PeerMessage::Choke,
+        }));
+    }
+
+    #[test]
+    fn request_from_choked_peer_is_ignored_without_serving() {
+        let mut manager = manager();
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+
+        let actions = manager
+            .handle_message(
+                PeerKey::new(1),
+                PeerMessage::Request {
+                    index: 0,
+                    begin: 0,
+                    length: 16,
+                },
+                now,
+            )
+            .unwrap();
+
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, PeerAction::ServeBlock { .. })));
+    }
+
+    #[test]
+    fn request_from_unchoked_peer_emits_serve_block_action() {
+        let mut manager = manager();
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+        manager
+            .handle_message(PeerKey::new(1), PeerMessage::Interested, now)
+            .unwrap();
+        let _ = manager.tick_seed(now).unwrap();
+        manager
+            .handle_message(
+                PeerKey::new(1),
+                PeerMessage::Request {
+                    index: 0,
+                    begin: 0,
+                    length: 16,
+                },
+                now,
+            )
+            .unwrap();
+
+        let actions = manager.tick_seed(now).unwrap();
+
+        assert!(actions.contains(&PeerAction::ServeBlock {
+            peer: PeerKey::new(1),
+            request: BlockRequest::new(
+                PieceIndex::new(0),
+                BlockOffset::new(0),
+                BlockLength::new(16).unwrap()
+            ),
+        }));
+    }
+
+    #[test]
+    fn cancel_removes_pending_upload_request_before_serving() {
+        let mut manager = manager();
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+        manager
+            .handle_message(PeerKey::new(1), PeerMessage::Interested, now)
+            .unwrap();
+        let _ = manager.tick_seed(now).unwrap();
+        manager
+            .handle_message(
+                PeerKey::new(1),
+                PeerMessage::Request {
+                    index: 0,
+                    begin: 0,
+                    length: 16,
+                },
+                now,
+            )
+            .unwrap();
+        manager
+            .handle_message(
+                PeerKey::new(1),
+                PeerMessage::Cancel {
+                    index: 0,
+                    begin: 0,
+                    length: 16,
+                },
+                now,
+            )
+            .unwrap();
+
+        let actions = manager.tick_seed(now).unwrap();
+
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, PeerAction::ServeBlock { .. })));
+    }
+
+    #[test]
+    fn record_uploaded_updates_peer_upload_rate_for_seeding_choke_selection() {
+        let config = PeerManagerConfig {
+            upload_slots: 1,
+            startup_random_pieces: 0,
+            ..PeerManagerConfig::default()
+        };
+        let mut manager = manager_with_config(config);
+        let now = Instant::now();
+        manager.add_peer(PeerKey::new(1)).unwrap();
+        manager.add_peer(PeerKey::new(2)).unwrap();
+        manager
+            .handle_message(PeerKey::new(1), PeerMessage::Interested, now)
+            .unwrap();
+        manager
+            .handle_message(PeerKey::new(2), PeerMessage::Interested, now)
+            .unwrap();
+        manager.record_uploaded(PeerKey::new(2), 1600, now).unwrap();
+
+        let actions = manager.tick_seed(now).unwrap();
+
+        assert!(actions.contains(&PeerAction::SendMessage {
+            peer: PeerKey::new(2),
+            message: PeerMessage::Unchoke,
+        }));
     }
 }

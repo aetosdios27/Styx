@@ -42,6 +42,10 @@ pub enum PeerAction {
         request: BlockRequest,
         bytes: Bytes,
     },
+    ServeBlock {
+        peer: PeerKey,
+        request: BlockRequest,
+    },
     CancelDuplicate {
         peer: PeerKey,
         request: BlockRequest,
