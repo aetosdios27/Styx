@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use styx_core::PeerManagerConfig;
 
-use crate::RuntimeError;
+use crate::{DhtRuntimeConfig, RuntimeError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeConfig {
@@ -14,6 +14,7 @@ pub struct RuntimeConfig {
     pub limits: RuntimeLimits,
     pub peer: PeerManagerConfig,
     pub seed_policy: SeedPolicy,
+    pub dht: DhtRuntimeConfig,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,6 +43,7 @@ impl Default for RuntimeConfig {
             limits: RuntimeLimits::default(),
             peer: PeerManagerConfig::default(),
             seed_policy: SeedPolicy::default(),
+            dht: DhtRuntimeConfig::default(),
         }
     }
 }
@@ -81,6 +83,7 @@ impl RuntimeConfig {
             }
             _ => RuntimeError::InvalidConfig("peer manager config is invalid"),
         })?;
+        self.dht.validate()?;
         Ok(self)
     }
 }

@@ -4107,6 +4107,7 @@ dependencies = [
  "sha2",
  "styx-app",
  "styx-core",
+ "styx-dht",
  "styx-disk",
  "styx-proto",
  "styx-tracker",

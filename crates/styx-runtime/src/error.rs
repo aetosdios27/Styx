@@ -1,5 +1,6 @@
 use std::io;
 
+use styx_dht::DhtError;
 use styx_disk::DiskError;
 use styx_proto::{PeerWireError, TorrentMetainfoError};
 use styx_tracker::TrackerError;
@@ -82,6 +83,8 @@ pub enum RuntimeError {
     #[error(transparent)]
     Disk(#[from] DiskError),
     #[error(transparent)]
+    Dht(#[from] DhtError),
+    #[error(transparent)]
     Http(#[from] reqwest::Error),
 }
 
@@ -114,6 +117,7 @@ impl RuntimeError {
             | Self::Tracker(_)
             | Self::PeerWire(_)
             | Self::Disk(_)
+            | Self::Dht(_)
             | Self::Http(_) => FailureScope::SourceLocal,
         }
     }
@@ -145,6 +149,7 @@ impl RuntimeError {
             | Self::Tracker(_)
             | Self::PeerWire(_)
             | Self::Disk(_)
+            | Self::Dht(_)
             | Self::Http(_) => RetryClass::Terminal,
         }
     }
@@ -262,6 +267,7 @@ impl PartialEq for RuntimeError {
                 (self, other),
                 (Self::Disk(a), Self::Disk(b)) if a == b
             )
+            || matches!((self, other), (Self::Dht(_), Self::Dht(_)))
             || matches!((self, other), (Self::Http(_), Self::Http(_)))
     }
 }

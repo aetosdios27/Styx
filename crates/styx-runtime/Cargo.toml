@@ -13,6 +13,7 @@ sha1 = { workspace = true }
 sha2 = { workspace = true }
 styx-core = { path = "../styx-core" }
 styx-disk = { path = "../styx-disk" }
+styx-dht = { path = "../styx-dht" }
 styx-app = { path = "../styx-app" }
 styx-proto = { path = "../styx-proto" }
 styx-tracker = { path = "../styx-tracker" }
