@@ -110,6 +110,7 @@ impl AppRuntime {
                 PersistentTorrentState::Queued
                 | PersistentTorrentState::Downloading
                 | PersistentTorrentState::Failed => {
+                    let _ = runtime.engine.resume_verify(id).await?;
                     runtime.pending_plans.insert(id, plan);
                     runtime
                         .engine

@@ -98,6 +98,13 @@ impl DaemonHandle {
         }
         result
     }
+
+    pub async fn abort(self) {
+        if let Some(join) = self.join.lock().await.take() {
+            join.abort();
+            let _ = join.await;
+        }
+    }
 }
 
 async fn run_daemon(
