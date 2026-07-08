@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use styx_cli::args::{Cli, Command};
+use styx_cli::args::{Cli, Command, DaemonCommand};
 
 #[test]
 fn cli_defaults_to_interactive_tui() {
@@ -88,5 +88,50 @@ fn cli_parses_download_command() {
             dest: PathBuf::from("/tmp/styx-download"),
             listen_port: 6999,
         })
+    );
+}
+
+#[test]
+fn cli_parses_daemon_start_command() {
+    let cli = Cli::parse_from([
+        "styx-cli",
+        "daemon",
+        "start",
+        "--state-dir",
+        "/tmp/styx-state",
+        "--socket",
+        "/tmp/styx.sock",
+    ]);
+
+    assert_eq!(
+        cli.command,
+        Some(Command::Daemon(DaemonCommand::Start {
+            state_dir: PathBuf::from("/tmp/styx-state"),
+            socket: PathBuf::from("/tmp/styx.sock"),
+        }))
+    );
+}
+
+#[test]
+fn cli_parses_daemon_status_command() {
+    let cli = Cli::parse_from(["styx-cli", "daemon", "status", "--socket", "/tmp/styx.sock"]);
+
+    assert_eq!(
+        cli.command,
+        Some(Command::Daemon(DaemonCommand::Status {
+            socket: PathBuf::from("/tmp/styx.sock"),
+        }))
+    );
+}
+
+#[test]
+fn cli_parses_daemon_stop_command() {
+    let cli = Cli::parse_from(["styx-cli", "daemon", "stop", "--socket", "/tmp/styx.sock"]);
+
+    assert_eq!(
+        cli.command,
+        Some(Command::Daemon(DaemonCommand::Stop {
+            socket: PathBuf::from("/tmp/styx.sock"),
+        }))
     );
 }

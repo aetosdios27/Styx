@@ -71,4 +71,27 @@ pub enum Command {
         #[arg(long, default_value_t = 6881, value_name = "PORT")]
         listen_port: u16,
     },
+    #[command(subcommand, about = "Run or control the Styx daemon")]
+    Daemon(DaemonCommand),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+pub enum DaemonCommand {
+    #[command(about = "Run the daemon in the foreground")]
+    Start {
+        #[arg(long, value_name = "DIR")]
+        state_dir: PathBuf,
+        #[arg(long, value_name = "PATH")]
+        socket: PathBuf,
+    },
+    #[command(about = "Print daemon status over IPC")]
+    Status {
+        #[arg(long, value_name = "PATH")]
+        socket: PathBuf,
+    },
+    #[command(about = "Stop the daemon over IPC")]
+    Stop {
+        #[arg(long, value_name = "PATH")]
+        socket: PathBuf,
+    },
 }

@@ -1,6 +1,7 @@
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use styx_app::{CommandResponseEnvelope, ControlCommand, TorrentRuntime};
-use styx_runtime::DaemonHandle;
+use styx_runtime::{DaemonHandle, DaemonStatus};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::CliError;
@@ -15,6 +16,58 @@ pub fn decode_command(bytes: &[u8]) -> Result<ControlCommand, CliError> {
 
 pub fn encode_response(response: &CommandResponseEnvelope) -> Result<Vec<u8>, CliError> {
     encode_line(response)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DaemonControlCommand {
+    #[serde(rename = "daemon_status")]
+    Status,
+    #[serde(rename = "daemon_stop")]
+    Stop,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DaemonControlResponse {
+    #[serde(rename = "daemon_status")]
+    Status {
+        pid: Option<u32>,
+        socket_path: String,
+        torrent_count: u32,
+        uptime_ms: u64,
+    },
+    #[serde(rename = "daemon_stopped")]
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DaemonResponseEnvelope {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response: Option<DaemonControlResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl DaemonResponseEnvelope {
+    #[must_use]
+    pub fn ok(response: DaemonControlResponse) -> Self {
+        Self {
+            ok: true,
+            response: Some(response),
+            error: None,
+        }
+    }
+
+    #[must_use]
+    pub fn err(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            response: None,
+            error: Some(error.into()),
+        }
+    }
 }
 
 fn encode_line(value: &impl serde::Serialize) -> Result<Vec<u8>, CliError> {
@@ -99,6 +152,30 @@ pub async fn send_unix_command(
 }
 
 #[cfg(unix)]
+pub async fn send_daemon_control(
+    path: &std::path::Path,
+    command: &DaemonControlCommand,
+) -> Result<DaemonResponseEnvelope, CliError> {
+    use tokio::net::UnixStream;
+
+    let mut stream = UnixStream::connect(path).await?;
+    stream.write_all(&encode_line(command)?).await?;
+    stream.shutdown().await?;
+    let mut reader = BufReader::new(stream);
+    let mut response = Vec::new();
+    reader.read_until(b'\n', &mut response).await?;
+    decode_exact(&response)
+}
+
+#[cfg(not(unix))]
+pub async fn send_daemon_control(
+    _path: &std::path::Path,
+    _command: &DaemonControlCommand,
+) -> Result<DaemonResponseEnvelope, CliError> {
+    Err(CliError::UnsupportedIpc)
+}
+
+#[cfg(unix)]
 async fn handle_daemon_stream(
     stream: tokio::net::UnixStream,
     daemon: DaemonHandle,
@@ -106,6 +183,13 @@ async fn handle_daemon_stream(
     let mut reader = BufReader::new(stream);
     let mut request = Vec::new();
     reader.read_until(b'\n', &mut request).await?;
+    if let Ok(command) = decode_exact::<DaemonControlCommand>(&request) {
+        let response = handle_daemon_control(command, daemon).await;
+        let mut stream = reader.into_inner();
+        stream.write_all(&encode_line(&response)?).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
     let response = match decode_command(&request) {
         Ok(command) => match daemon.apply(command).await {
             Ok(response) => CommandResponseEnvelope::ok(response),
@@ -117,6 +201,31 @@ async fn handle_daemon_stream(
     stream.write_all(&encode_response(&response)?).await?;
     stream.shutdown().await?;
     Ok(())
+}
+
+async fn handle_daemon_control(
+    command: DaemonControlCommand,
+    daemon: DaemonHandle,
+) -> DaemonResponseEnvelope {
+    match command {
+        DaemonControlCommand::Status => match daemon.status().await {
+            Ok(status) => DaemonResponseEnvelope::ok(status_response(status)),
+            Err(error) => DaemonResponseEnvelope::err(error.to_string()),
+        },
+        DaemonControlCommand::Stop => match daemon.shutdown().await {
+            Ok(()) => DaemonResponseEnvelope::ok(DaemonControlResponse::Stopped),
+            Err(error) => DaemonResponseEnvelope::err(error.to_string()),
+        },
+    }
+}
+
+fn status_response(status: DaemonStatus) -> DaemonControlResponse {
+    DaemonControlResponse::Status {
+        pid: status.pid,
+        socket_path: status.socket_path.display().to_string(),
+        torrent_count: status.torrent_count,
+        uptime_ms: status.uptime.as_millis().min(u128::from(u64::MAX)) as u64,
+    }
 }
 
 #[cfg(not(unix))]

@@ -12,15 +12,15 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::{
-    args::{Cli, Command},
+    args::{Cli, Command, DaemonCommand},
     error::CliError,
     headless::{run_default_headless, HeadlessOptions},
-    ipc::send_unix_command,
+    ipc::{send_daemon_control, send_unix_command, serve_daemon_socket, DaemonControlCommand},
 };
 use styx_app::{
     CommandResponseEnvelope, ControlCommand, InfoHashHex, MemoryRuntime, TorrentRuntime,
 };
-use styx_runtime::{AppRuntime, RuntimeConfig, RuntimeEngine};
+use styx_runtime::{AppRuntime, DaemonConfig, DaemonRuntime, RuntimeConfig, RuntimeEngine};
 
 pub async fn run(cli: Cli) -> Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -93,6 +93,25 @@ pub async fn run(cli: Cli) -> Result<()> {
             println!();
             return Ok(());
         }
+        if let Command::Daemon(command) = command {
+            if let DaemonCommand::Start { state_dir, socket } = command {
+                let config = RuntimeConfig {
+                    listen_port: cli.listen_port,
+                    ..RuntimeConfig::default()
+                };
+                let daemon = DaemonRuntime::start(DaemonConfig {
+                    state_dir: state_dir.clone(),
+                    socket_path: socket.clone(),
+                    tick_interval: config.snapshot_interval,
+                    runtime_config: config,
+                })
+                .await?;
+                serve_daemon_socket(socket, daemon).await?;
+                return Ok(());
+            }
+            run_daemon_command_once(command.clone(), std::io::stdout()).await?;
+            return Ok(());
+        }
 
         if let Some(path) = &cli.ipc {
             let command = control_command(command)?;
@@ -135,6 +154,26 @@ pub fn run_command_once(cli: Cli, mut writer: impl Write) -> Result<(), CliError
     Ok(())
 }
 
+pub async fn run_daemon_command_once(
+    command: DaemonCommand,
+    mut writer: impl Write,
+) -> Result<(), CliError> {
+    let response = match command {
+        DaemonCommand::Status { socket } => {
+            send_daemon_control(&socket, &DaemonControlCommand::Status).await?
+        }
+        DaemonCommand::Stop { socket } => {
+            send_daemon_control(&socket, &DaemonControlCommand::Stop).await?
+        }
+        DaemonCommand::Start { .. } => {
+            return Err(CliError::UnsupportedMemoryCommand);
+        }
+    };
+    serde_json::to_writer(&mut writer, &response)?;
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
 fn control_command(command: &Command) -> Result<ControlCommand, CliError> {
     Ok(match command {
         Command::Add {
@@ -154,7 +193,7 @@ fn control_command(command: &Command) -> Result<ControlCommand, CliError> {
             info_hash: InfoHashHex::from_str(info_hash)?,
         },
         Command::Status => ControlCommand::Status,
-        Command::Smoke { .. } | Command::Download { .. } => {
+        Command::Smoke { .. } | Command::Download { .. } | Command::Daemon(_) => {
             return Err(CliError::UnsupportedMemoryCommand)
         }
     })
