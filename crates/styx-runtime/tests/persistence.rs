@@ -125,6 +125,33 @@ async fn restore_completed_torrent_reverifies_existing_data_before_seeding() {
 }
 
 #[tokio::test]
+async fn restore_completed_torrent_with_missing_data_does_not_seed() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    let destination = temp.path().join("downloads");
+    std::fs::write(&torrent, torrent_from_chunks(&[b"abcd".as_slice()])).unwrap();
+    let state = PersistentState {
+        schema_version: 1,
+        torrents: vec![PersistentTorrent {
+            source_path: torrent,
+            destination,
+            state: PersistentTorrentState::Complete,
+            added_at_unix: 1,
+            completed_at_unix: Some(2),
+        }],
+    };
+
+    let mut runtime = AppRuntime::restore_from_state(RuntimeConfig::default(), state)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        runtime.snapshot().torrents[0].status,
+        styx_app::TorrentStatus::Paused
+    );
+}
+
+#[tokio::test]
 async fn restore_missing_torrent_file_returns_typed_error() {
     let temp = tempfile::tempdir().unwrap();
     let state = PersistentState {

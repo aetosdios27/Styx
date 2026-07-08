@@ -105,6 +105,9 @@ impl AppRuntime {
                     } else {
                         runtime
                             .engine
+                            .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))?;
+                        runtime
+                            .engine
                             .apply(RuntimeCommand::Torrent(id, TorrentCommand::Pause))?;
                     }
                 }
