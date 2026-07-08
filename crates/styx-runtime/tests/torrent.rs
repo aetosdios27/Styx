@@ -113,6 +113,19 @@ fn torrent_plan_rejects_torrents_without_any_http_source() {
     assert_eq!(err, RuntimeError::NoHttpTracker);
 }
 
+#[test]
+fn torrent_plan_allows_source_less_metadata_for_decentralized_resolution() {
+    let temp = tempfile::tempdir().unwrap();
+    let metainfo = styx_proto::decode_torrent(&single_file_torrent(None)).unwrap();
+
+    let plan =
+        TorrentPlan::from_metainfo_decentralized(metainfo, temp.path().join("downloads")).unwrap();
+
+    assert!(plan.announce_urls.is_empty());
+    assert!(plan.web_seed_urls.is_empty());
+    assert_eq!(plan.name, "file.bin");
+}
+
 fn single_file_torrent(announce: Option<&str>) -> Vec<u8> {
     let mut top = BTreeMap::new();
     if let Some(announce) = announce {

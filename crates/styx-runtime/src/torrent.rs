@@ -49,10 +49,28 @@ impl TorrentPlan {
         metainfo: TorrentMetainfo,
         destination: impl AsRef<Path>,
     ) -> Result<Self, RuntimeError> {
+        Self::from_metainfo_with_source_policy(metainfo, destination, SourcePolicy::RequireHttp)
+    }
+
+    pub fn from_metainfo_decentralized(
+        metainfo: TorrentMetainfo,
+        destination: impl AsRef<Path>,
+    ) -> Result<Self, RuntimeError> {
+        Self::from_metainfo_with_source_policy(metainfo, destination, SourcePolicy::AllowEmpty)
+    }
+
+    fn from_metainfo_with_source_policy(
+        metainfo: TorrentMetainfo,
+        destination: impl AsRef<Path>,
+        source_policy: SourcePolicy,
+    ) -> Result<Self, RuntimeError> {
         let total_size = torrent_size(&metainfo);
         let announce_urls = http_announce_urls(&metainfo)?;
         let web_seed_urls = web_seed_urls(&metainfo)?;
-        if announce_urls.is_empty() && web_seed_urls.is_empty() {
+        if source_policy == SourcePolicy::RequireHttp
+            && announce_urls.is_empty()
+            && web_seed_urls.is_empty()
+        {
             return Err(RuntimeError::NoHttpTracker);
         }
         let info_hash_v2 = metainfo.info_hash_v2;
@@ -83,6 +101,12 @@ impl TorrentPlan {
     pub fn piece_length(&self, piece: PieceIndex) -> Result<u32, RuntimeError> {
         Ok(self.disk_plan.piece_length(piece)?)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourcePolicy {
+    RequireHttp,
+    AllowEmpty,
 }
 
 impl TorrentId {

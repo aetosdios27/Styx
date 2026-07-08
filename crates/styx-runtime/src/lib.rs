@@ -10,6 +10,7 @@ mod driver;
 mod engine;
 mod error;
 mod intent;
+mod magnet;
 mod metadata;
 mod peer;
 mod peer_io;
@@ -36,6 +37,7 @@ pub use download::run_full_v1_download;
 pub use engine::RuntimeEngine;
 pub use error::{FailureScope, RetryClass, RuntimeError};
 pub use intent::{IntentState, RollbackRecord, StageIntent};
+pub use magnet::{resolve_magnet_from_exact_peers, MagnetAdd, ResolvedMagnet};
 pub use metadata::{fetch_metadata_from_peer, fetch_metadata_from_stream, MetadataFetchConfig};
 pub use peer::{download_piece_from_peer, DownloadedPiece, PeerPieceRequest};
 pub use persist::{

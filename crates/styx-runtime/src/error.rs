@@ -74,6 +74,8 @@ pub enum RuntimeError {
     Persistence(&'static str),
     #[error("metadata exchange failed: {0}")]
     Metadata(String),
+    #[error("magnet resolution failed: {0}")]
+    Magnet(String),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -100,6 +102,7 @@ impl RuntimeError {
             }
             Self::Persistence(_) => FailureScope::RuntimeGlobal,
             Self::Metadata(_) => FailureScope::SourceLocal,
+            Self::Magnet(_) => FailureScope::TorrentGlobal,
             Self::NoHttpTracker
             | Self::NoPeers
             | Self::NoWebSeeds
@@ -145,6 +148,7 @@ impl RuntimeError {
             | Self::UnsupportedWebSeedLayout
             | Self::InvalidConfig(_)
             | Self::Persistence(_)
+            | Self::Magnet(_)
             | Self::InvalidTrackerUrl { .. }
             | Self::Cancelled
             | Self::Io(_)
@@ -274,6 +278,7 @@ impl PartialEq for RuntimeError {
             || matches!((self, other), (Self::Dht(_), Self::Dht(_)))
             || matches!((self, other), (Self::Http(_), Self::Http(_)))
             || matches!((self, other), (Self::Metadata(a), Self::Metadata(b)) if a == b)
+            || matches!((self, other), (Self::Magnet(a), Self::Magnet(b)) if a == b)
     }
 }
 
