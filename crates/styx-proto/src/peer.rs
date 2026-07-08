@@ -7,6 +7,10 @@ use crate::metainfo::InfoHashV1;
 
 const PROTOCOL_STRING: &[u8; 19] = b"BitTorrent protocol";
 const PROTOCOL_STRING_LEN: u8 = 19;
+const DHT_RESERVED_BYTE: usize = 7;
+const DHT_RESERVED_MASK: u8 = 0x01;
+const EXTENDED_RESERVED_BYTE: usize = 5;
+const EXTENDED_RESERVED_MASK: u8 = 0x10;
 
 /// Length in bytes of a v1 BitTorrent peer handshake.
 pub const PEER_HANDSHAKE_LEN: usize = 68;
@@ -48,6 +52,32 @@ impl ExtensionBits {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; 8] {
         &self.0
+    }
+
+    /// Return whether the peer advertises BEP 5 DHT support.
+    #[must_use]
+    pub fn supports_dht(&self) -> bool {
+        self.0[DHT_RESERVED_BYTE] & DHT_RESERVED_MASK != 0
+    }
+
+    /// Return these extension bits with the BEP 5 DHT bit enabled.
+    #[must_use]
+    pub fn with_dht(mut self) -> Self {
+        self.0[DHT_RESERVED_BYTE] |= DHT_RESERVED_MASK;
+        self
+    }
+
+    /// Return whether the peer advertises BEP 10 extended-message support.
+    #[must_use]
+    pub fn supports_extended(&self) -> bool {
+        self.0[EXTENDED_RESERVED_BYTE] & EXTENDED_RESERVED_MASK != 0
+    }
+
+    /// Return these extension bits with the BEP 10 extended-message bit enabled.
+    #[must_use]
+    pub fn with_extended(mut self) -> Self {
+        self.0[EXTENDED_RESERVED_BYTE] |= EXTENDED_RESERVED_MASK;
+        self
     }
 }
 
@@ -113,6 +143,18 @@ pub enum PeerMessage {
         begin: u32,
         /// Canceled block length.
         length: u32,
+    },
+    /// Message id 9 (BEP 5) — DHT UDP listen port.
+    Port {
+        /// Peer DHT UDP port.
+        port: u16,
+    },
+    /// Message id 20 (BEP 10) — extended protocol payload.
+    Extended {
+        /// Peer-local extension id. `0` is the extension handshake.
+        extension_id: u8,
+        /// Opaque extension payload interpreted by higher-level modules.
+        payload: Bytes,
     },
     /// Message id 21 (BEP 52) — hash request.
     HashRequest(Box<hash_msg::HashRequest>),
@@ -320,6 +362,18 @@ pub fn encode_message(message: &PeerMessage) -> Result<Bytes, PeerWireError> {
             bytes.put_u8(8);
             put_request_payload(&mut bytes, *index, *begin, *length);
         }
+        PeerMessage::Port { port } => {
+            bytes.put_u8(9);
+            bytes.put_u16(*port);
+        }
+        PeerMessage::Extended {
+            extension_id,
+            payload,
+        } => {
+            bytes.put_u8(20);
+            bytes.put_u8(*extension_id);
+            bytes.extend_from_slice(payload);
+        }
         PeerMessage::HashRequest(req) => {
             let encoded = req.encode();
             bytes.extend_from_slice(&encoded);
@@ -472,6 +526,8 @@ fn message_payload_len(message: &PeerMessage) -> usize {
         PeerMessage::Bitfield { bytes } => 1 + bytes.len(),
         PeerMessage::Request { .. } | PeerMessage::Cancel { .. } => 13,
         PeerMessage::Piece { block, .. } => 9 + block.len(),
+        PeerMessage::Port { .. } => 3,
+        PeerMessage::Extended { payload, .. } => 2 + payload.len(),
         PeerMessage::HashRequest(_) => 1 + 32 + 16,
         PeerMessage::Hashes(h) => 1 + 32 + 16 + h.hashes.len() * 32,
         PeerMessage::HashReject(_) => 1 + 32 + 16,
@@ -559,6 +615,25 @@ fn decode_message_payload(payload: &[u8]) -> Result<PeerMessage, PeerWireError> 
                 length,
             })
         }
+        9 => {
+            require_len("port", body, 2)?;
+            Ok(PeerMessage::Port {
+                port: u16::from_be_bytes([body[0], body[1]]),
+            })
+        }
+        20 => {
+            let Some((&extension_id, payload)) = body.split_first() else {
+                return Err(PeerWireError::InvalidMessageLength {
+                    message: "extended",
+                    expected: "at least 2",
+                    actual: 1,
+                });
+            };
+            Ok(PeerMessage::Extended {
+                extension_id,
+                payload: Bytes::copy_from_slice(payload),
+            })
+        }
         21 => {
             let payload = [&[hash_msg::HASH_REQUEST_ID], body].concat();
             hash_msg::HashRequest::decode(&payload)
@@ -616,6 +691,7 @@ fn require_len(message: &'static str, body: &[u8], expected: usize) -> Result<()
 fn fixed_len_label(expected: usize) -> &'static str {
     match expected {
         0 => "1",
+        2 => "3",
         4 => "5",
         12 => "13",
         _ => "fixed",
@@ -709,6 +785,65 @@ mod tests {
         let encoded = encode_message(&PeerMessage::KeepAlive);
 
         assert_eq!(encoded.unwrap().as_ref(), &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn port_message_round_trips() {
+        let message = PeerMessage::Port { port: 6881 };
+
+        let decoded = decode_message_frame(&encode_message(&message).unwrap()).unwrap();
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn port_message_rejects_wrong_payload_length() {
+        let err = decode_message_frame(&[0, 0, 0, 2, 9, 1]).unwrap_err();
+
+        assert!(matches!(
+            err,
+            PeerWireError::InvalidMessageLength {
+                message: "port",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn extended_message_round_trips_handshake_payload() {
+        let message = PeerMessage::Extended {
+            extension_id: 0,
+            payload: Bytes::from_static(b"d1:md11:ut_metadatai3eee"),
+        };
+
+        let decoded = decode_message_frame(&encode_message(&message).unwrap()).unwrap();
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn extended_message_rejects_empty_payload() {
+        let err = decode_message_frame(&[0, 0, 0, 1, 20]).unwrap_err();
+
+        assert!(matches!(
+            err,
+            PeerWireError::InvalidMessageLength {
+                message: "extended",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn extension_bits_set_and_detect_dht_and_extended_without_clobbering_other_bits() {
+        let bits = ExtensionBits::new([0x80, 0, 0, 0, 0, 0, 0, 0x01])
+            .with_dht()
+            .with_extended();
+
+        assert!(bits.supports_dht());
+        assert!(bits.supports_extended());
+        assert_eq!(bits.as_bytes()[0], 0x80);
+        assert_eq!(bits.as_bytes()[7] & 0x01, 0x01);
     }
 
     #[test]
@@ -885,6 +1020,13 @@ mod tests {
                     length,
                 }
             ),
+            any::<u16>().prop_map(|port| PeerMessage::Port { port }),
+            (any::<u8>(), prop_vec(any::<u8>(), 0..32)).prop_map(|(extension_id, payload)| {
+                PeerMessage::Extended {
+                    extension_id,
+                    payload: Bytes::from(payload),
+                }
+            }),
         ]
     }
 }
