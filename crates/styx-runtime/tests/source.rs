@@ -62,3 +62,20 @@ fn source_table_quarantines_corrupt_sources_without_retry() {
     assert_eq!(table.state(id).unwrap(), SourceState::Quarantined);
     assert!(table.next_candidates(1).is_empty());
 }
+
+#[test]
+fn source_table_accepts_dht_peers_with_peer_endpoint_deduplication() {
+    let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 51413);
+    let mut table = SourceTable::from_candidates(Vec::new(), &RuntimeConfig::default()).unwrap();
+
+    let id = table.add_dht_peer(peer).unwrap();
+    let duplicate = table.add_dht_peer(peer).unwrap_err();
+
+    assert_eq!(table.state(id).unwrap(), SourceState::Fresh);
+    assert_eq!(duplicate, styx_runtime::RuntimeError::DuplicateSource);
+    assert_eq!(table.by_kind(SourceKind::DhtPeer).count(), 1);
+    assert_eq!(
+        table.next_candidates(1)[0].endpoint,
+        styx_runtime::SourceEndpoint::Peer(peer)
+    );
+}

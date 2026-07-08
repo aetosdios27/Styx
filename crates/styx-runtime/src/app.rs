@@ -530,6 +530,10 @@ fn map_to_log_line(event: &RuntimeEvent) -> Option<LogLine> {
             level: LogLevel::Warn,
             message: format!("peer {addr} disconnected for torrent {torrent:?}"),
         }),
+        RuntimeEvent::DhtPeersDiscovered { torrent, peers } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!("DHT discovered {peers} peers for torrent {torrent:?}"),
+        }),
         RuntimeEvent::BlockUploaded {
             torrent,
             peer,

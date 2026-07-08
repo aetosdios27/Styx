@@ -13,6 +13,7 @@ pub struct SourceId(u64);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SourceKind {
     Peer,
+    DhtPeer,
     WebSeed,
 }
 
@@ -78,6 +79,15 @@ impl SourceCandidate {
             id,
             kind: SourceKind::WebSeed,
             endpoint: SourceEndpoint::WebSeed(url),
+        }
+    }
+
+    #[must_use]
+    pub fn dht_peer(id: SourceId, address: SocketAddr) -> Self {
+        Self {
+            id,
+            kind: SourceKind::DhtPeer,
+            endpoint: SourceEndpoint::Peer(address),
         }
     }
 }
@@ -216,6 +226,10 @@ impl SourceTable {
             },
         );
         Ok(id)
+    }
+
+    pub fn add_dht_peer(&mut self, address: SocketAddr) -> Result<SourceId, RuntimeError> {
+        self.add_candidate(SourceEndpoint::Peer(address), SourceKind::DhtPeer)
     }
 
     pub fn state(&self, source: SourceId) -> Result<SourceState, RuntimeError> {

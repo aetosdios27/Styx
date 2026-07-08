@@ -93,6 +93,10 @@ pub enum RuntimeEvent {
         torrent: TorrentId,
         addr: std::net::SocketAddr,
     },
+    DhtPeersDiscovered {
+        torrent: TorrentId,
+        peers: u32,
+    },
     BlockUploaded {
         torrent: TorrentId,
         peer: std::net::SocketAddr,
@@ -202,6 +206,7 @@ impl RuntimeEvent {
             Self::TaskCompleted { .. } => "task_completed",
             Self::PeerConnected { .. } => "peer_connected",
             Self::PeerDisconnected { .. } => "peer_disconnected",
+            Self::DhtPeersDiscovered { .. } => "dht_peers_discovered",
             Self::BlockUploaded { .. } => "block_uploaded",
             Self::IntentDeclared { .. } => "intent_declared",
             Self::ValidationStarted => "validation_started",

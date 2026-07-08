@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
@@ -120,6 +120,34 @@ fn runtime_engine_preserves_terminal_events_when_event_queue_is_full() {
         engine.drain_events().last(),
         Some(RuntimeEvent::TaskCancelled { torrent }) if *torrent == id
     ));
+}
+
+#[test]
+fn runtime_engine_ingests_dht_peers_as_download_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let torrent = temp.path().join("sample.torrent");
+    std::fs::write(&torrent, torrent_bytes()).unwrap();
+    let plan =
+        styx_runtime::TorrentPlan::from_file(&torrent, temp.path().join("downloads")).unwrap();
+    let id = plan.id;
+    let peer: SocketAddr = "127.0.0.1:51413".parse().unwrap();
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    engine
+        .apply(RuntimeCommand::AddPlan(Box::new(plan)))
+        .unwrap();
+
+    let added = engine.add_dht_peers(id, vec![peer, peer]).unwrap();
+
+    assert_eq!(added, 1);
+    assert!(engine.drain_events().iter().any(|event| {
+        matches!(
+            event,
+            RuntimeEvent::DhtPeersDiscovered {
+                torrent,
+                peers
+            } if *torrent == id && *peers == 1
+        )
+    }));
 }
 
 #[tokio::test]

@@ -152,6 +152,19 @@ impl TorrentTask {
         self.status
     }
 
+    pub fn add_dht_peers(&mut self, peers: impl IntoIterator<Item = SocketAddr>) -> usize {
+        let mut added = 0;
+        for peer in peers {
+            if peer.port() == 0 || peer.ip().is_unspecified() {
+                continue;
+            }
+            if self.sources.add_dht_peer(peer).is_ok() {
+                added += 1;
+            }
+        }
+        added
+    }
+
     pub fn apply(&mut self, command: TorrentCommand) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         match command {
             TorrentCommand::Start => self.transition(TorrentStatus::Discovering),

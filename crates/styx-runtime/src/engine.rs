@@ -168,6 +168,25 @@ impl RuntimeEngine {
         Err(RuntimeError::AllPeersFailed { last_error })
     }
 
+    pub fn add_dht_peers(
+        &mut self,
+        id: TorrentId,
+        peers: Vec<SocketAddr>,
+    ) -> Result<usize, RuntimeError> {
+        let task = self
+            .tasks
+            .get_mut(&id)
+            .ok_or(RuntimeError::InvalidConfig("unknown torrent"))?;
+        let added = task.add_dht_peers(peers);
+        if added > 0 {
+            self.push_event(RuntimeEvent::DhtPeersDiscovered {
+                torrent: id,
+                peers: u32::try_from(added).unwrap_or(u32::MAX),
+            });
+        }
+        Ok(added)
+    }
+
     pub async fn resume_verify(&mut self, id: TorrentId) -> Result<ResumeSummary, RuntimeError> {
         let task = self
             .tasks
