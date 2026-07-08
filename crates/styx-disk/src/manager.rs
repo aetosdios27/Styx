@@ -174,6 +174,24 @@ impl PieceManager {
             .unwrap_or(false)
     }
 
+    /// Read a block from disk only if its piece has already been verified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DiskError::PieceNotVerified`] when the piece has not been
+    /// verified, or another [`DiskError`] when the block is invalid or disk IO
+    /// fails.
+    pub async fn read_verified_block(&self, block: BlockSpec) -> Result<Bytes, DiskError> {
+        if !self.has_piece(block.piece()) {
+            return Err(DiskError::PieceNotVerified {
+                piece: block.piece().get(),
+            });
+        }
+        self.store
+            .read_block(block.piece(), block.offset(), block.length())
+            .await
+    }
+
     /// Number of verified pieces.
     #[must_use]
     pub fn verified_piece_count(&self) -> u32 {
@@ -353,6 +371,27 @@ mod tests {
         assert_eq!(
             tokio::fs::read(temp.path().join("file.bin")).await.unwrap(),
             b"abcdefgh"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_verified_block_rejects_unverified_piece() {
+        let temp = tempfile::tempdir().unwrap();
+        tokio::fs::write(temp.path().join("file.bin"), b"abcdefgh")
+            .await
+            .unwrap();
+        let manager = PieceManager::new(plan_for_root_and_bytes(temp.path(), b"abcdefgh"));
+
+        let err = manager
+            .read_verified_block(block(PieceIndex::new(0), 0, 4, 8))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            DiskError::PieceNotVerified {
+                piece: PieceIndex::new(0).get()
+            }
         );
     }
 

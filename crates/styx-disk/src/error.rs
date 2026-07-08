@@ -45,6 +45,12 @@ pub enum DiskError {
     /// A piece is incomplete because at least one block is missing.
     #[error("missing block")]
     MissingBlock,
+    /// A caller attempted to serve a piece that has not been verified.
+    #[error("piece {piece} has not been verified")]
+    PieceNotVerified {
+        /// Requested piece index.
+        piece: u32,
+    },
     /// Piece bytes did not match the expected hash.
     #[error("piece hash mismatch")]
     HashMismatch,
@@ -129,6 +135,9 @@ impl PartialEq for DiskError {
                     piece_length: right_piece_length,
                 },
             ) => left_offset == right_offset && left_piece_length == right_piece_length,
+            (Self::PieceNotVerified { piece: left }, Self::PieceNotVerified { piece: right }) => {
+                left == right
+            }
             (
                 Self::V2MerkleMismatch { piece: left_piece },
                 Self::V2MerkleMismatch { piece: right_piece },

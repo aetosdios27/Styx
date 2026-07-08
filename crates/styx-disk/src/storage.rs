@@ -5,7 +5,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
-use crate::{DiskError, DiskPlan, FileSpan, PieceIndex};
+use crate::{BlockLength, BlockOffset, BlockSpec, DiskError, DiskPlan, FileSpan, PieceIndex};
 
 /// Async disk IO for a planned torrent layout.
 #[derive(Clone, Debug)]
@@ -71,6 +71,28 @@ impl DiskStore {
             file.read_exact(&mut output[start..end]).await?;
         }
         Ok(output.freeze())
+    }
+
+    /// Read an exact block slice from a planned piece.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DiskError`] when the piece is invalid, the block bounds are
+    /// outside the piece, or disk IO fails.
+    pub async fn read_block(
+        &self,
+        piece: PieceIndex,
+        offset: BlockOffset,
+        length: BlockLength,
+    ) -> Result<Bytes, DiskError> {
+        let piece_length = self.plan.piece_length(piece)?;
+        let block = BlockSpec::new(piece, offset, length, piece_length)?;
+        let bytes = self.read_piece(piece).await?;
+        let start = block.offset().get() as usize;
+        let end = start
+            .checked_add(block.length().get() as usize)
+            .ok_or(DiskError::IntegerOverflow)?;
+        Ok(bytes.slice(start..end))
     }
 
     async fn commit_single_file_piece(
@@ -308,7 +330,7 @@ mod tests {
     use styx_proto::{FileMode, InfoHashV1, TorrentFile, TorrentInfo, TorrentMetainfo};
 
     use super::*;
-    use crate::{DiskPlan, PieceIndex};
+    use crate::{BlockLength, BlockOffset, DiskPlan, PieceIndex};
 
     #[tokio::test]
     async fn commit_piece_writes_and_reads_single_file_piece() {
@@ -391,6 +413,114 @@ mod tests {
                 .unwrap(),
             expected_b
         );
+    }
+
+    #[tokio::test]
+    async fn read_block_returns_exact_slice_from_single_file_piece() {
+        let temp = tempfile::tempdir().unwrap();
+        let plan = plan(
+            temp.path(),
+            TorrentInfo {
+                name: Bytes::from_static(b"file.bin"),
+                piece_length: 16 * 1024,
+                pieces: Some(Bytes::from(vec![0_u8; 20])),
+                private: false,
+                mode: FileMode::Single { length: 8 },
+                meta_version: None,
+                file_tree: None,
+            },
+        );
+        let store = DiskStore::new(plan);
+        store
+            .commit_piece(PieceIndex::new(0), Bytes::from_static(b"abcdefgh"))
+            .await
+            .unwrap();
+
+        let bytes = store
+            .read_block(
+                PieceIndex::new(0),
+                BlockOffset::new(2),
+                BlockLength::new(4).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(bytes, Bytes::from_static(b"cdef"));
+    }
+
+    #[tokio::test]
+    async fn read_block_returns_exact_slice_across_multi_file_piece() {
+        let temp = tempfile::tempdir().unwrap();
+        let plan = plan(
+            temp.path(),
+            TorrentInfo {
+                name: Bytes::from_static(b"album"),
+                piece_length: 16 * 1024,
+                pieces: Some(Bytes::from(vec![0_u8; 20 * 2])),
+                private: false,
+                mode: FileMode::Multi {
+                    files: vec![
+                        TorrentFile {
+                            length: 10 * 1024,
+                            path: vec![Bytes::from_static(b"a.bin")],
+                        },
+                        TorrentFile {
+                            length: 10 * 1024,
+                            path: vec![Bytes::from_static(b"b.bin")],
+                        },
+                    ],
+                },
+                meta_version: None,
+                file_tree: None,
+            },
+        );
+        let store = DiskStore::new(plan);
+        let mut piece = vec![b'a'; 10 * 1024];
+        piece.extend(vec![b'b'; 6 * 1024]);
+        store
+            .commit_piece(PieceIndex::new(0), Bytes::from(piece))
+            .await
+            .unwrap();
+
+        let bytes = store
+            .read_block(
+                PieceIndex::new(0),
+                BlockOffset::new(10 * 1024 - 2),
+                BlockLength::new(5).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(bytes, Bytes::from_static(b"aabbb"));
+    }
+
+    #[tokio::test]
+    async fn read_block_rejects_out_of_bounds_offset_and_length() {
+        let temp = tempfile::tempdir().unwrap();
+        let plan = plan(
+            temp.path(),
+            TorrentInfo {
+                name: Bytes::from_static(b"file.bin"),
+                piece_length: 16 * 1024,
+                pieces: Some(Bytes::from(vec![0_u8; 20])),
+                private: false,
+                mode: FileMode::Single { length: 8 },
+                meta_version: None,
+                file_tree: None,
+            },
+        );
+        let store = DiskStore::new(plan);
+
+        let err = store
+            .read_block(
+                PieceIndex::new(0),
+                BlockOffset::new(6),
+                BlockLength::new(3).unwrap(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, DiskError::BlockOutOfBounds);
     }
 
     fn plan(root: &std::path::Path, info: TorrentInfo) -> DiskPlan {
