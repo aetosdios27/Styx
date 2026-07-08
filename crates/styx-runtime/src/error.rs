@@ -72,6 +72,8 @@ pub enum RuntimeError {
     Cancelled,
     #[error("persistent state error: {0}")]
     Persistence(&'static str),
+    #[error("metadata exchange failed: {0}")]
+    Metadata(String),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -97,6 +99,7 @@ impl RuntimeError {
                 FailureScope::RuntimeGlobal
             }
             Self::Persistence(_) => FailureScope::RuntimeGlobal,
+            Self::Metadata(_) => FailureScope::SourceLocal,
             Self::NoHttpTracker
             | Self::NoPeers
             | Self::NoWebSeeds
@@ -150,7 +153,8 @@ impl RuntimeError {
             | Self::PeerWire(_)
             | Self::Disk(_)
             | Self::Dht(_)
-            | Self::Http(_) => RetryClass::Terminal,
+            | Self::Http(_)
+            | Self::Metadata(_) => RetryClass::Terminal,
         }
     }
 }
@@ -269,6 +273,7 @@ impl PartialEq for RuntimeError {
             )
             || matches!((self, other), (Self::Dht(_), Self::Dht(_)))
             || matches!((self, other), (Self::Http(_), Self::Http(_)))
+            || matches!((self, other), (Self::Metadata(a), Self::Metadata(b)) if a == b)
     }
 }
 
