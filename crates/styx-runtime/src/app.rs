@@ -256,9 +256,18 @@ impl TorrentRuntime for AppRuntime {
             }
             ControlCommand::Pause { info_hash } => {
                 let id = torrent_id_from_hex(info_hash)?;
+                let was_seeding =
+                    self.engine.snapshot().torrents.iter().any(|snapshot| {
+                        snapshot.id == id && snapshot.status == TorrentStatus::Seeding
+                    });
                 self.engine
                     .apply(RuntimeCommand::Torrent(id, TorrentCommand::Pause))
                     .map_err(map_runtime_error)?;
+                if was_seeding {
+                    if let Some(handle) = self.bg_handles.remove(&id) {
+                        handle.abort();
+                    }
+                }
                 if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
                     torrent.state = PersistentTorrentState::Paused;
                 }
