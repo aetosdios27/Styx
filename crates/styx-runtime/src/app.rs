@@ -548,6 +548,8 @@ fn torrent_snapshot_to_row(snap: &TorrentSnapshot) -> TorrentRow {
         },
         size_bytes: snap.total_bytes,
         progress,
+        uploaded_bytes: snap.uploaded_bytes,
+        share_ratio: snap.share_ratio(),
         down_rate: snap.down_rate,
         up_rate: snap.up_rate,
         peers: snap.peers,

@@ -16,6 +16,8 @@ fn torrent_tab_renders_torrent_name() {
             status: TorrentStatus::Checking,
             size_bytes: 1024,
             progress: 0.25,
+            uploaded_bytes: 0,
+            share_ratio: 0.0,
             down_rate: 2048,
             up_rate: 0,
             peers: 2,

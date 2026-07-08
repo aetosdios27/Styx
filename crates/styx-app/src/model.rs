@@ -18,6 +18,8 @@ pub struct TorrentRow {
     pub status: TorrentStatus,
     pub size_bytes: u64,
     pub progress: f32,
+    pub uploaded_bytes: u64,
+    pub share_ratio: f32,
     pub down_rate: u64,
     pub up_rate: u64,
     pub peers: u32,

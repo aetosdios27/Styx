@@ -21,13 +21,15 @@ export function TorrentTable() {
               <th>Progress</th>
               <th>Down</th>
               <th>Up</th>
+              <th>Uploaded</th>
+              <th>Ratio</th>
               <th>Seeds</th>
             </tr>
           </thead>
           <tbody>
             {state.snapshot.torrents.length === 0 ? (
               <tr>
-                <td colSpan={7} className="empty-cell">
+                <td colSpan={9} className="empty-cell">
                   No torrents in this session.
                 </td>
               </tr>
@@ -44,6 +46,8 @@ export function TorrentTable() {
                   <td>{formatPercent(torrent.progress)}</td>
                   <td>{formatRate(torrent.down_rate)}</td>
                   <td>{formatRate(torrent.up_rate)}</td>
+                  <td>{formatBytes(torrent.uploaded_bytes)}</td>
+                  <td>{torrent.share_ratio.toFixed(2)}</td>
                   <td>
                     {torrent.seeds}/{torrent.peers}
                   </td>

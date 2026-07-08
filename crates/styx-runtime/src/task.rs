@@ -27,6 +27,7 @@ pub struct TorrentTask {
     status: TorrentStatus,
     verified_bytes: u64,
     downloaded_bytes: u64,
+    uploaded_bytes: u64,
     down_rate: RateCounter,
     up_rate: RateCounter,
     last_rate_tick: Instant,
@@ -64,6 +65,7 @@ impl TorrentTask {
             status: TorrentStatus::Checking,
             verified_bytes: 0,
             downloaded_bytes: 0,
+            uploaded_bytes: 0,
             down_rate: RateCounter::new(Duration::from_secs(2)).expect("2s window is valid"),
             up_rate: RateCounter::new(Duration::from_secs(2)).expect("2s window is valid"),
             last_rate_tick: Instant::now(),
@@ -113,6 +115,7 @@ impl TorrentTask {
             status: TorrentStatus::Checking,
             verified_bytes: 0,
             downloaded_bytes: 0,
+            uploaded_bytes: 0,
             down_rate: RateCounter::new(Duration::from_secs(2)).expect("2s window is valid"),
             up_rate: RateCounter::new(Duration::from_secs(2)).expect("2s window is valid"),
             last_rate_tick: Instant::now(),
@@ -417,7 +420,8 @@ impl TorrentTask {
         let mut snapshot =
             TorrentSnapshot::new(self.plan.id, self.plan.name.clone(), self.plan.total_size)
                 .with_verified_bytes(self.verified_bytes)
-                .with_downloaded_bytes(self.downloaded_bytes);
+                .with_downloaded_bytes(self.downloaded_bytes)
+                .with_uploaded_bytes(self.uploaded_bytes);
         snapshot.status = self.status;
         snapshot.down_rate = self.cached_down_rate;
         snapshot.up_rate = self.cached_up_rate;
@@ -620,6 +624,7 @@ impl TorrentTask {
                         .is_ok()
                     {
                         let now = Instant::now();
+                        self.uploaded_bytes = self.uploaded_bytes.saturating_add(byte_count);
                         self.up_rate.record(now, byte_count);
                         let _ = self.manager.record_uploaded(peer, byte_count, now);
                         events.push(RuntimeEvent::BlockUploaded {
@@ -1963,6 +1968,7 @@ mod tests {
                 }
             )
         }));
+        assert_eq!(task.snapshot().uploaded_bytes, 16_384);
         let (first, second) = tokio::time::timeout(Duration::from_secs(2), peer)
             .await
             .unwrap()

@@ -8,6 +8,8 @@ export interface TorrentRow {
   status: TorrentStatus;
   size_bytes: number;
   progress: number;
+  uploaded_bytes: number;
+  share_ratio: number;
   down_rate: number;
   up_rate: number;
   peers: number;

@@ -55,6 +55,8 @@ fn render_torrents(frame: &mut Frame<'_>, area: ratatui::layout::Rect, torrents:
             Cell::from(format_percent(torrent.progress)),
             Cell::from(format_rate(torrent.down_rate)),
             Cell::from(format_rate(torrent.up_rate)),
+            Cell::from(format_bytes(torrent.uploaded_bytes)),
+            Cell::from(format!("{:.2}", torrent.share_ratio)),
             Cell::from(format!("{}/{}", torrent.seeds, torrent.peers)),
             Cell::from(format!("{:?}", torrent.status).to_lowercase()),
         ])
@@ -62,17 +64,19 @@ fn render_torrents(frame: &mut Frame<'_>, area: ratatui::layout::Rect, torrents:
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(28),
+            Constraint::Percentage(24),
+            Constraint::Percentage(12),
+            Constraint::Percentage(10),
             Constraint::Percentage(12),
             Constraint::Percentage(12),
-            Constraint::Percentage(14),
-            Constraint::Percentage(14),
             Constraint::Percentage(10),
-            Constraint::Percentage(10),
+            Constraint::Percentage(8),
+            Constraint::Percentage(7),
+            Constraint::Percentage(5),
         ],
     )
     .header(Row::new([
-        "Name", "Size", "Progress", "Down", "Up", "S/P", "State",
+        "Name", "Size", "Progress", "Down", "Up", "Uploaded", "Ratio", "S/P", "State",
     ]))
     .block(Block::default().title("Torrents").borders(Borders::ALL));
     frame.render_widget(table, area);

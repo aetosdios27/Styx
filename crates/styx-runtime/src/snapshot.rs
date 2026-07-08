@@ -15,6 +15,7 @@ pub struct TorrentSnapshot {
     pub total_bytes: u64,
     pub verified_bytes: u64,
     pub downloaded_bytes: u64,
+    pub uploaded_bytes: u64,
     pub down_rate: u64,
     pub up_rate: u64,
     pub peers: u32,
@@ -142,6 +143,7 @@ impl TorrentSnapshot {
             total_bytes,
             verified_bytes: 0,
             downloaded_bytes: 0,
+            uploaded_bytes: 0,
             down_rate: 0,
             up_rate: 0,
             peers: 0,
@@ -162,11 +164,25 @@ impl TorrentSnapshot {
     }
 
     #[must_use]
+    pub fn with_uploaded_bytes(mut self, bytes: u64) -> Self {
+        self.uploaded_bytes = bytes;
+        self
+    }
+
+    #[must_use]
     pub fn progress(&self) -> f32 {
         if self.total_bytes == 0 {
             return 1.0;
         }
         self.verified_bytes as f32 / self.total_bytes as f32
+    }
+
+    #[must_use]
+    pub fn share_ratio(&self) -> f32 {
+        if self.total_bytes == 0 {
+            return 0.0;
+        }
+        self.uploaded_bytes as f32 / self.total_bytes as f32
     }
 }
 

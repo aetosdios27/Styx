@@ -10,6 +10,8 @@ const snapshot: AppSnapshot = {
       status: "checking",
       size_bytes: 1024,
       progress: 0.25,
+      uploaded_bytes: 0,
+      share_ratio: 0,
       down_rate: 0,
       up_rate: 0,
       peers: 0,

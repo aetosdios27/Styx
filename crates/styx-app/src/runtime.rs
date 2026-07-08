@@ -113,6 +113,8 @@ impl MemoryRuntime {
             status: TorrentStatus::Checking,
             size_bytes: torrent_size(&meta),
             progress: 0.0,
+            uploaded_bytes: 0,
+            share_ratio: 0.0,
             down_rate: 0,
             up_rate: 0,
             peers: 0,

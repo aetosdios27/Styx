@@ -15,6 +15,18 @@ fn torrent_snapshot_progress_uses_verified_bytes_only() {
 }
 
 #[test]
+fn torrent_snapshot_share_ratio_uses_uploaded_over_total_when_complete() {
+    let mut torrent =
+        TorrentSnapshot::new(TorrentId::new(InfoHashV1::new([6; 20])), "sample.iso", 100)
+            .with_verified_bytes(100)
+            .with_uploaded_bytes(250);
+    torrent.status = TorrentStatus::Seeding;
+
+    assert_eq!(torrent.uploaded_bytes, 250);
+    assert_eq!(torrent.share_ratio(), 2.5);
+}
+
+#[test]
 fn rate_counter_reports_bytes_inside_window() {
     let start = Instant::now();
     let mut counter = RateCounter::new(Duration::from_secs(5)).unwrap();
