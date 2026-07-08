@@ -1,5 +1,6 @@
 use serde::de::DeserializeOwned;
 use styx_app::{CommandResponseEnvelope, ControlCommand, TorrentRuntime};
+use styx_runtime::DaemonHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::CliError;
@@ -56,6 +57,32 @@ pub async fn serve_unix_socket(
 }
 
 #[cfg(unix)]
+pub async fn serve_daemon_socket(
+    path: &std::path::Path,
+    daemon: DaemonHandle,
+) -> Result<(), CliError> {
+    use tokio::net::UnixListener;
+
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path)?;
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let daemon = daemon.clone();
+        tokio::spawn(async move {
+            let _ = handle_daemon_stream(stream, daemon).await;
+        });
+    }
+}
+
+#[cfg(not(unix))]
+pub async fn serve_daemon_socket(
+    _path: &std::path::Path,
+    _daemon: DaemonHandle,
+) -> Result<(), CliError> {
+    Err(CliError::UnsupportedIpc)
+}
+
+#[cfg(unix)]
 pub async fn send_unix_command(
     path: &std::path::Path,
     command: &ControlCommand,
@@ -69,6 +96,27 @@ pub async fn send_unix_command(
     let mut response = Vec::new();
     reader.read_until(b'\n', &mut response).await?;
     decode_exact(&response)
+}
+
+#[cfg(unix)]
+async fn handle_daemon_stream(
+    stream: tokio::net::UnixStream,
+    daemon: DaemonHandle,
+) -> Result<(), CliError> {
+    let mut reader = BufReader::new(stream);
+    let mut request = Vec::new();
+    reader.read_until(b'\n', &mut request).await?;
+    let response = match decode_command(&request) {
+        Ok(command) => match daemon.apply(command).await {
+            Ok(response) => CommandResponseEnvelope::ok(response),
+            Err(error) => CommandResponseEnvelope::err(error.to_string()),
+        },
+        Err(error) => CommandResponseEnvelope::err(error.to_string()),
+    };
+    let mut stream = reader.into_inner();
+    stream.write_all(&encode_response(&response)?).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 #[cfg(not(unix))]

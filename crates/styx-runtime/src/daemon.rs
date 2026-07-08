@@ -1,10 +1,11 @@
 use std::{
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use styx_app::{commands::CommandResponse, error::AppError, ControlCommand, TorrentRuntime};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::{PersistentAppRuntime, PersistentStore, RuntimeConfig, RuntimeError};
 
@@ -27,10 +28,10 @@ pub struct DaemonStatus {
 #[derive(Debug)]
 pub struct DaemonRuntime;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DaemonHandle {
     tx: mpsc::Sender<DaemonRequest>,
-    join: tokio::task::JoinHandle<()>,
+    join: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 #[derive(Debug)]
@@ -58,7 +59,10 @@ impl DaemonRuntime {
         let runtime = PersistentAppRuntime::open(config.runtime_config.clone(), store).await?;
         let (tx, rx) = mpsc::channel(64);
         let join = tokio::spawn(run_daemon(config, runtime, rx));
-        Ok(DaemonHandle { tx, join })
+        Ok(DaemonHandle {
+            tx,
+            join: Arc::new(Mutex::new(Some(join))),
+        })
     }
 }
 
@@ -89,7 +93,9 @@ impl DaemonHandle {
             .await
             .map_err(|_| RuntimeError::Cancelled)?;
         let result = rx.await.map_err(|_| RuntimeError::Cancelled)?;
-        let _ = self.join.await;
+        if let Some(join) = self.join.lock().await.take() {
+            let _ = join.await;
+        }
         result
     }
 }
