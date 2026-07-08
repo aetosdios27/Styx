@@ -11,6 +11,7 @@ pub mod hash_msg;
 pub mod hybrid;
 pub mod info_hash_v2;
 pub mod magnet_v2;
+pub mod metadata;
 pub mod metainfo;
 pub mod peer;
 
@@ -26,6 +27,10 @@ pub use hash_msg::{
 pub use hybrid::{is_hybrid, validate_hybrid_consistency, HybridError};
 pub use info_hash_v2::{InfoHashV2, SHA256_DIGEST_BYTES};
 pub use magnet_v2::{parse_v2_magnet, MagnetV2Error, V2MagnetInfo};
+pub use metadata::{
+    decode_metadata_message, encode_metadata_message, metadata_piece_count, MetadataError,
+    MetadataMessage, METADATA_BLOCK_LEN,
+};
 pub use metainfo::{
     decode_torrent, is_safe_path_component, FileMode, InfoHashV1, TorrentFile, TorrentInfo,
     TorrentMetainfo, TorrentMetainfoError,
