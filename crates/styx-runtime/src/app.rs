@@ -101,7 +101,9 @@ impl AppRuntime {
                         for event in runtime.engine.replace_with_completed(id)? {
                             runtime.engine.push_event(event);
                         }
-                        runtime.spawn_seed_worker(id, plan.clone());
+                        if runtime.engine.config().seed_policy.seed_after_complete {
+                            runtime.spawn_seed_worker(id, plan.clone());
+                        }
                     } else {
                         runtime
                             .engine
@@ -344,7 +346,9 @@ impl TorrentRuntime for AppRuntime {
                             self.engine.push_event(e);
                         }
                     }
-                    if let Some(plan) = plan {
+                    if let Some(plan) =
+                        plan.filter(|_| self.engine.config().seed_policy.seed_after_complete)
+                    {
                         self.spawn_seed_worker(id, plan);
                     }
                 }

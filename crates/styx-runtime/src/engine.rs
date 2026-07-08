@@ -186,7 +186,8 @@ impl RuntimeEngine {
             });
         }
         let id = plan.id;
-        self.tasks.insert(id, TorrentTask::new(plan));
+        self.tasks
+            .insert(id, TorrentTask::new_with_peers(plan, self.config.clone())?);
         Ok(vec![RuntimeEvent::TorrentAdded { torrent: id }])
     }
 
@@ -212,6 +213,9 @@ impl RuntimeEngine {
         if let Some(limits) = patch.limits {
             self.config.limits = limits;
         }
+        if let Some(seed_policy) = patch.seed_policy {
+            self.config.seed_policy = seed_policy;
+        }
         Ok(())
     }
 
@@ -222,9 +226,10 @@ impl RuntimeEngine {
                 Ok(())
             }
             RollbackRecord::RemoveRollback { id, plan } => {
-                self.tasks
-                    .entry(id)
-                    .or_insert_with(|| TorrentTask::new(*plan));
+                if !self.tasks.contains_key(&id) {
+                    let task = TorrentTask::new_with_peers(*plan, self.config.clone())?;
+                    self.tasks.insert(id, task);
+                }
                 Ok(())
             }
             RollbackRecord::SettingsRollback { previous } => {
@@ -269,9 +274,11 @@ impl RuntimeEngine {
     ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         let (plan, mut events) = self.remove_torrent_intent(id)?;
         let total_size = plan.total_size;
-        let mut task = TorrentTask::new(*plan);
+        let mut task = TorrentTask::new_with_peers(*plan, self.config.clone())?;
         task.set_status_complete()?;
-        events.extend(task.start_seeding()?);
+        if self.config.seed_policy.seed_after_complete {
+            events.extend(task.start_seeding()?);
+        }
         self.tasks.insert(id, task);
         events.push(RuntimeEvent::TorrentAdded { torrent: id });
         events.push(RuntimeEvent::ProgressUpdated {

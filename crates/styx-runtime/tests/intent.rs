@@ -53,6 +53,7 @@ fn settings_patch_default_fields_are_none() {
     let patch = SettingsPatch::default();
     assert!(patch.listen_port.is_none());
     assert!(patch.limits.is_none());
+    assert!(patch.seed_policy.is_none());
 }
 
 #[test]
@@ -228,7 +229,7 @@ fn settings_intent_rejects_zero_listen_port() {
     let engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
     let patch = SettingsPatch {
         listen_port: Some(0),
-        limits: None,
+        ..SettingsPatch::default()
     };
     let intent = StageIntent::Settings { patch };
     let result = intent.validate(&engine);
@@ -247,7 +248,7 @@ fn settings_intent_apply_patch_updates_config() {
     };
     let patch = SettingsPatch {
         limits: Some(new_limits),
-        listen_port: None,
+        ..SettingsPatch::default()
     };
     let intent = StageIntent::Settings { patch };
 
@@ -269,7 +270,7 @@ fn settings_intent_rollback_restores_previous_config() {
             max_active_torrents: 16,
             ..old_limits
         }),
-        listen_port: None,
+        ..SettingsPatch::default()
     };
     let intent = StageIntent::Settings { patch };
 
@@ -312,7 +313,7 @@ fn failed_validation_emits_error() {
     let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
     let patch = SettingsPatch {
         listen_port: Some(0),
-        limits: None,
+        ..SettingsPatch::default()
     };
     let intent = StageIntent::Settings { patch };
 
@@ -329,6 +330,7 @@ fn settings_intent_none_fields_leave_config_unchanged() {
     let patch = SettingsPatch {
         limits: None,
         listen_port: None,
+        ..SettingsPatch::default()
     };
     let intent = StageIntent::Settings { patch };
 

@@ -38,6 +38,7 @@ pub struct TorrentTask {
     sources: SourceTable,
     peer_id: PeerId,
     tracker: HttpTrackerClient,
+    seed_after_complete: bool,
     pending_verify: Vec<PieceIndex>,
     pending_verify_peers: BTreeMap<PieceIndex, Vec<styx_core::PeerKey>>,
     pending_verify_peer_addrs: BTreeMap<PieceIndex, Vec<SocketAddr>>,
@@ -78,6 +79,7 @@ impl TorrentTask {
             last_announce: None,
             announce_interval: Duration::from_secs(1800),
             tracker: HttpTrackerClient::new(512 * 1024),
+            seed_after_complete: RuntimeConfig::default().seed_policy.seed_after_complete,
             pending_verify: Vec::new(),
             pending_verify_peers: BTreeMap::new(),
             pending_verify_peer_addrs: BTreeMap::new(),
@@ -128,6 +130,7 @@ impl TorrentTask {
             last_announce: None,
             announce_interval: Duration::from_secs(1800),
             tracker: HttpTrackerClient::new(512 * 1024),
+            seed_after_complete: config.seed_policy.seed_after_complete,
             pending_verify: Vec::new(),
             pending_verify_peers: BTreeMap::new(),
             pending_verify_peer_addrs: BTreeMap::new(),
@@ -316,7 +319,9 @@ impl TorrentTask {
             events.push(RuntimeEvent::TaskCompleted {
                 torrent: self.plan.id,
             });
-            events.extend(self.start_seeding()?);
+            if self.seed_after_complete {
+                events.extend(self.start_seeding()?);
+            }
         }
         Ok(events)
     }
@@ -473,7 +478,9 @@ impl TorrentTask {
             events.push(RuntimeEvent::TaskCompleted {
                 torrent: self.plan.id,
             });
-            events.extend(self.start_seeding()?);
+            if self.seed_after_complete {
+                events.extend(self.start_seeding()?);
+            }
         }
         Ok(events)
     }

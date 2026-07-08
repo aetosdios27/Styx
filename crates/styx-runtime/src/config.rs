@@ -13,6 +13,7 @@ pub struct RuntimeConfig {
     pub listen_port: u16,
     pub limits: RuntimeLimits,
     pub peer: PeerManagerConfig,
+    pub seed_policy: SeedPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +26,11 @@ pub struct RuntimeLimits {
     pub source_retry_limit: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SeedPolicy {
+    pub seed_after_complete: bool,
+}
+
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
@@ -35,6 +41,7 @@ impl Default for RuntimeConfig {
             listen_port: 6881,
             limits: RuntimeLimits::default(),
             peer: PeerManagerConfig::default(),
+            seed_policy: SeedPolicy::default(),
         }
     }
 }
@@ -48,6 +55,14 @@ impl Default for RuntimeLimits {
             max_web_seed_concurrency: 2,
             max_event_queue: 1024,
             source_retry_limit: 3,
+        }
+    }
+}
+
+impl Default for SeedPolicy {
+    fn default() -> Self {
+        Self {
+            seed_after_complete: true,
         }
     }
 }

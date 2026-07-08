@@ -26,7 +26,7 @@ mod types;
 mod web_seed;
 
 pub use app::{AppRuntime, PersistentAppRuntime};
-pub use config::{RuntimeConfig, RuntimeLimits};
+pub use config::{RuntimeConfig, RuntimeLimits, SeedPolicy};
 pub use control::{RuntimeCommand, TorrentCommand};
 pub use daemon::{DaemonConfig, DaemonHandle, DaemonRuntime, DaemonStatus};
 pub use download::run_full_v1_download;
