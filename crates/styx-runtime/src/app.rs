@@ -15,9 +15,10 @@ use styx_app::{
 
 use crate::{
     driver::{spawn_bg_download, spawn_bg_seed, BgEvent},
-    PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentState, RuntimeCommand,
-    RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, RuntimeSnapshot, TorrentCommand,
-    TorrentId, TorrentPlan, TorrentSnapshot, TorrentStatus, PERSISTENT_STATE_SCHEMA_VERSION,
+    MagnetAdd, PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentSource,
+    PersistentTorrentState, RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError,
+    RuntimeEvent, RuntimeSnapshot, TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot,
+    TorrentStatus, PERSISTENT_STATE_SCHEMA_VERSION,
 };
 
 const DEFAULT_SPEED_SAMPLES: usize = 60;
@@ -73,12 +74,26 @@ impl AppRuntime {
         let state = state.validate()?;
         let mut runtime = Self::new_with_config(config)?;
         for torrent in state.torrents {
-            if !torrent.source_path.exists() {
+            let PersistentTorrentSource::File { path: source_path } = &torrent.source else {
+                let magnet = match &torrent.source {
+                    PersistentTorrentSource::Magnet { uri } => styx_proto::parse_magnet_uri(uri)
+                        .map_err(|_| RuntimeError::Persistence("invalid persistent magnet uri"))?,
+                    PersistentTorrentSource::File { .. } => unreachable!(),
+                };
+                let info_hash = magnet.info_hash_v1.ok_or(RuntimeError::Persistence(
+                    "persistent magnet requires a v1 info hash",
+                ))?;
+                runtime
+                    .persistent_torrents
+                    .insert(TorrentId::new(info_hash), torrent);
+                continue;
+            };
+            if !source_path.exists() {
                 return Err(RuntimeError::Persistence(
                     "persistent torrent source is missing",
                 ));
             }
-            let plan = TorrentPlan::from_file(&torrent.source_path, &torrent.destination)?;
+            let plan = TorrentPlan::from_file(source_path, &torrent.destination)?;
             let id = plan.id;
             runtime
                 .engine
@@ -160,7 +175,9 @@ impl AppRuntime {
         self.persistent_torrents.insert(
             id,
             PersistentTorrent {
-                source_path: source.clone(),
+                source: PersistentTorrentSource::File {
+                    path: source.clone(),
+                },
                 destination: dest.clone(),
                 state: PersistentTorrentState::Downloading,
                 added_at_unix: 0,
@@ -175,6 +192,48 @@ impl AppRuntime {
             .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))
             .map_err(map_runtime_error)?;
         Ok(CommandResponse::TorrentAdded { info_hash, name })
+    }
+
+    fn apply_add_magnet(
+        &mut self,
+        uri: String,
+        destination: Option<std::path::PathBuf>,
+    ) -> Result<CommandResponse, AppError> {
+        let destination =
+            destination.ok_or_else(|| AppError::InvalidCommand("destination required".into()))?;
+        let add = MagnetAdd {
+            uri: uri.clone(),
+            destination: destination.clone(),
+        };
+        self.engine
+            .apply(RuntimeCommand::AddMagnet(Box::new(add)))
+            .map_err(map_runtime_error)?;
+        let magnet = styx_proto::parse_magnet_uri(&uri)
+            .map_err(|err| AppError::InvalidCommand(err.to_string()))?;
+        let info_hash = magnet.info_hash_v1.ok_or_else(|| {
+            AppError::InvalidCommand(
+                "v1 info hash required until v2 downloads are supported".into(),
+            )
+        })?;
+        let id = TorrentId::new(info_hash);
+        if self.persistent_torrents.contains_key(&id) {
+            return Err(AppError::InvalidCommand("torrent already exists".into()));
+        }
+        let name = magnet.display_name.unwrap_or_default();
+        self.persistent_torrents.insert(
+            id,
+            PersistentTorrent {
+                source: PersistentTorrentSource::Magnet { uri },
+                destination,
+                state: PersistentTorrentState::Queued,
+                added_at_unix: 0,
+                completed_at_unix: None,
+            },
+        );
+        Ok(CommandResponse::TorrentAdded {
+            info_hash: InfoHashHex::new(*id.as_bytes()),
+            name,
+        })
     }
 
     fn spawn_seed_worker(&mut self, id: TorrentId, plan: TorrentPlan) {
@@ -241,6 +300,9 @@ impl TorrentRuntime for AppRuntime {
                 source,
                 destination,
             } => self.apply_add(source, destination),
+            ControlCommand::AddMagnet { uri, destination } => {
+                self.apply_add_magnet(uri, destination)
+            }
             ControlCommand::Remove { info_hash } => {
                 let id = torrent_id_from_hex(info_hash)?;
                 if let Some(handle) = self.bg_handles.remove(&id) {
@@ -283,7 +345,12 @@ impl TorrentRuntime for AppRuntime {
                     .apply(RuntimeCommand::Torrent(id, TorrentCommand::Resume))
                     .map_err(map_runtime_error)?;
                 if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
-                    let plan = TorrentPlan::from_file(&torrent.source_path, &torrent.destination)
+                    let PersistentTorrentSource::File { path } = &torrent.source else {
+                        return Err(AppError::InvalidCommand(
+                            "magnet metadata is not resolved".into(),
+                        ));
+                    };
+                    let plan = TorrentPlan::from_file(path, &torrent.destination)
                         .map_err(map_runtime_error)?;
                     if self.engine.snapshot().torrents.iter().any(|snapshot| {
                         snapshot.id == id && snapshot.status == TorrentStatus::Seeding
@@ -456,6 +523,7 @@ fn torrent_id_from_hex(hex: InfoHashHex) -> Result<TorrentId, AppError> {
 fn map_runtime_error(err: RuntimeError) -> AppError {
     match err {
         RuntimeError::InvalidConfig(msg) => AppError::InvalidCommand(msg.to_string()),
+        RuntimeError::Magnet(message) => AppError::InvalidCommand(message),
         RuntimeError::Backpressure { .. } => AppError::Backpressure,
         _ => AppError::Internal(err.to_string()),
     }

@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
+use std::path::PathBuf;
 use styx_proto::{encode, BencodeValue, InfoHashV1};
 use styx_runtime::{
-    IntentState, RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError,
-    RuntimeEvent, RuntimeLimits, SettingsPatch, StageIntent, TorrentCommand, TorrentId,
-    TorrentPlan, TorrentStatus,
+    IntentState, MagnetAdd, RollbackRecord, RuntimeCommand, RuntimeConfig, RuntimeEngine,
+    RuntimeError, RuntimeEvent, RuntimeLimits, SettingsPatch, StageIntent, TorrentCommand,
+    TorrentId, TorrentPlan, TorrentStatus,
 };
 
 fn tid(byte: u8) -> TorrentId {
@@ -337,4 +338,20 @@ fn settings_intent_none_fields_leave_config_unchanged() {
     intent.validate(&engine).unwrap();
     let (_record, _) = intent.execute(&mut engine).unwrap();
     assert_eq!(engine.config().limits, original);
+}
+
+#[test]
+fn add_magnet_intent_rejects_invalid_magnet_before_side_effects() {
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    let intent = StageIntent::AddMagnet {
+        magnet: Box::new(MagnetAdd {
+            uri: "not-a-magnet".into(),
+            destination: PathBuf::from("/tmp/downloads"),
+        }),
+    };
+
+    let error = intent.validate(&engine).unwrap_err();
+
+    assert!(matches!(error, RuntimeError::Magnet(_)));
+    assert!(engine.snapshot().torrents.is_empty());
 }

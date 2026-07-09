@@ -7,7 +7,8 @@ use styx_app::TorrentRuntime;
 use styx_proto::{encode, BencodeValue};
 use styx_runtime::{
     AppRuntime, PersistentAppRuntime, PersistentState, PersistentStore, PersistentTorrent,
-    PersistentTorrentState, RuntimeConfig, RuntimeError,
+    PersistentTorrentSource, PersistentTorrentState, RuntimeConfig, RuntimeError,
+    PERSISTENT_STATE_SCHEMA_VERSION,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -19,9 +20,11 @@ fn persistent_state_round_trips_torrent_manifest() {
     let source_path = PathBuf::from("/tmp/styx/sample.torrent");
     let destination = PathBuf::from("/tmp/styx/downloads");
     let state = PersistentState {
-        schema_version: 1,
+        schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
         torrents: vec![PersistentTorrent {
-            source_path: source_path.clone(),
+            source: PersistentTorrentSource::File {
+                path: source_path.clone(),
+            },
             destination: destination.clone(),
             state: PersistentTorrentState::Downloading,
             added_at_unix: 1_725_000_000,
@@ -54,6 +57,69 @@ fn persistent_store_rejects_unknown_schema_version() {
 }
 
 #[test]
+fn persistent_state_v1_file_torrents_migrate_to_v2_source_enum() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = PersistentStore::open(temp.path()).unwrap();
+    std::fs::write(
+        temp.path().join("state.json"),
+        r#"{"schema_version":1,"torrents":[{"source_path":"/tmp/sample.torrent","destination":"/tmp/downloads","state":"paused","added_at_unix":1,"completed_at_unix":null}]}"#,
+    )
+    .unwrap();
+
+    let state = store.load().unwrap();
+
+    assert_eq!(state.schema_version, 2);
+    assert_eq!(
+        state.torrents[0].source,
+        PersistentTorrentSource::File {
+            path: PathBuf::from("/tmp/sample.torrent")
+        }
+    );
+}
+
+#[tokio::test]
+async fn persistent_state_round_trips_pending_magnet_without_peer_or_node_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = PersistentStore::open(temp.path().join("state")).unwrap();
+    let mut runtime = PersistentAppRuntime::open(RuntimeConfig::default(), store.clone())
+        .await
+        .unwrap();
+    let uri = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
+
+    runtime
+        .apply_and_persist(styx_app::ControlCommand::AddMagnet {
+            uri: uri.into(),
+            destination: Some(temp.path().join("downloads")),
+        })
+        .unwrap();
+
+    let encoded = std::fs::read_to_string(store.state_path()).unwrap();
+    let state = store.load().unwrap();
+    assert_eq!(
+        state.torrents[0].source,
+        PersistentTorrentSource::Magnet { uri: uri.into() }
+    );
+    assert!(!encoded.contains("peer"));
+    assert!(!encoded.contains("node_id"));
+}
+
+#[tokio::test]
+async fn add_magnet_intent_requires_destination() {
+    let runtime = AppRuntime::new_with_config(RuntimeConfig::default()).unwrap();
+    let mut runtime = runtime;
+
+    let error = runtime
+        .apply(styx_app::ControlCommand::AddMagnet {
+            uri: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".into(),
+            destination: None,
+        })
+        .unwrap_err();
+
+    assert!(error.to_string().contains("destination required"));
+    assert!(runtime.persistent_state().torrents.is_empty());
+}
+
+#[test]
 fn persistent_store_rejects_corrupt_json_without_deleting_file() {
     let temp = tempfile::tempdir().unwrap();
     let store = PersistentStore::open(temp.path()).unwrap();
@@ -76,9 +142,9 @@ async fn restore_readds_paused_torrent_without_starting_background_download() {
     let destination = temp.path().join("downloads");
     std::fs::write(&torrent, torrent_from_chunks(&[b"abcd".as_slice()])).unwrap();
     let state = PersistentState {
-        schema_version: 1,
+        schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
         torrents: vec![PersistentTorrent {
-            source_path: torrent,
+            source: PersistentTorrentSource::File { path: torrent },
             destination,
             state: PersistentTorrentState::Paused,
             added_at_unix: 1,
@@ -105,9 +171,9 @@ async fn restore_completed_torrent_reverifies_existing_data_before_seeding() {
     std::fs::create_dir_all(&destination).unwrap();
     std::fs::write(destination.join("file.bin"), b"abcd").unwrap();
     let state = PersistentState {
-        schema_version: 1,
+        schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
         torrents: vec![PersistentTorrent {
-            source_path: torrent,
+            source: PersistentTorrentSource::File { path: torrent },
             destination,
             state: PersistentTorrentState::Complete,
             added_at_unix: 1,
@@ -131,9 +197,9 @@ async fn restore_completed_torrent_with_missing_data_does_not_seed() {
     let destination = temp.path().join("downloads");
     std::fs::write(&torrent, torrent_from_chunks(&[b"abcd".as_slice()])).unwrap();
     let state = PersistentState {
-        schema_version: 1,
+        schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
         torrents: vec![PersistentTorrent {
-            source_path: torrent,
+            source: PersistentTorrentSource::File { path: torrent },
             destination,
             state: PersistentTorrentState::Complete,
             added_at_unix: 1,
@@ -155,9 +221,11 @@ async fn restore_completed_torrent_with_missing_data_does_not_seed() {
 async fn restore_missing_torrent_file_returns_typed_error() {
     let temp = tempfile::tempdir().unwrap();
     let state = PersistentState {
-        schema_version: 1,
+        schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
         torrents: vec![PersistentTorrent {
-            source_path: temp.path().join("missing.torrent"),
+            source: PersistentTorrentSource::File {
+                path: temp.path().join("missing.torrent"),
+            },
             destination: temp.path().join("downloads"),
             state: PersistentTorrentState::Downloading,
             added_at_unix: 1,
@@ -182,9 +250,9 @@ async fn persistent_state_returns_restored_torrent_intent() {
     let destination = temp.path().join("downloads");
     std::fs::write(&torrent, torrent_from_chunks(&[b"abcd".as_slice()])).unwrap();
     let state = PersistentState {
-        schema_version: 1,
+        schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
         torrents: vec![PersistentTorrent {
-            source_path: torrent,
+            source: PersistentTorrentSource::File { path: torrent },
             destination,
             state: PersistentTorrentState::Downloading,
             added_at_unix: 11,
@@ -217,7 +285,10 @@ async fn add_command_persists_new_torrent_record() {
         .unwrap();
 
     let state = store.load().unwrap();
-    assert_eq!(state.torrents[0].source_path, torrent);
+    assert_eq!(
+        state.torrents[0].source,
+        PersistentTorrentSource::File { path: torrent }
+    );
     assert_eq!(state.torrents[0].destination, destination);
     assert_eq!(state.torrents[0].state, PersistentTorrentState::Downloading);
 }

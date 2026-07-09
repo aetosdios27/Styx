@@ -34,6 +34,9 @@ impl TorrentRuntime for MemoryRuntime {
                 source,
                 destination,
             } => self.add_torrent(source, destination),
+            ControlCommand::AddMagnet { .. } => Err(AppError::InvalidCommand(
+                "magnet resolution is unavailable in the memory runtime".into(),
+            )),
             ControlCommand::Remove { info_hash } => {
                 self.torrents
                     .remove(&info_hash)

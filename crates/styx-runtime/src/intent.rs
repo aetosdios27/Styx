@@ -1,11 +1,12 @@
 use crate::{
-    RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, SettingsPatch, TorrentCommand,
-    TorrentId, TorrentPlan,
+    MagnetAdd, RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeEvent, SettingsPatch,
+    TorrentCommand, TorrentId, TorrentPlan,
 };
 
 #[derive(Clone, Debug)]
 pub enum StageIntent {
     Add { plan: Box<TorrentPlan> },
+    AddMagnet { magnet: Box<MagnetAdd> },
     Remove { id: TorrentId, delete_data: bool },
     Pause { id: TorrentId },
     Resume { id: TorrentId },
@@ -50,6 +51,7 @@ impl StageIntent {
                 let events = engine.add_plan_intent((**plan).clone())?;
                 Ok((Some(RollbackRecord::AddRollback { id }), events))
             }
+            Self::AddMagnet { .. } => Ok((None, Vec::new())),
             Self::Remove { id, delete_data: _ } => {
                 let (plan, events) = engine.remove_torrent_intent(*id)?;
                 Ok((
@@ -118,6 +120,7 @@ impl StageIntent {
     fn torrent_id(&self) -> Option<TorrentId> {
         match self {
             Self::Add { plan } => Some(plan.id),
+            Self::AddMagnet { .. } => None,
             Self::Remove { id, .. } => Some(*id),
             Self::Pause { id } => Some(*id),
             Self::Resume { id } => Some(*id),
@@ -128,6 +131,7 @@ impl StageIntent {
     fn kind_str(&self) -> &'static str {
         match self {
             Self::Add { .. } => "add",
+            Self::AddMagnet { .. } => "add_magnet",
             Self::Remove { .. } => "remove",
             Self::Pause { .. } => "pause",
             Self::Resume { .. } => "resume",
@@ -141,6 +145,11 @@ impl StageIntent {
                 if engine.has_torrent(plan.id) {
                     return Err(RuntimeError::InvalidConfig("torrent already exists"));
                 }
+                Ok(())
+            }
+            Self::AddMagnet { magnet } => {
+                styx_proto::parse_magnet_uri(&magnet.uri)
+                    .map_err(|err| RuntimeError::Magnet(err.to_string()))?;
                 Ok(())
             }
             Self::Remove { id, .. } | Self::Pause { id } | Self::Resume { id } => {

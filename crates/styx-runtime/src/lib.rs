@@ -41,8 +41,8 @@ pub use magnet::{resolve_magnet_from_exact_peers, MagnetAdd, ResolvedMagnet};
 pub use metadata::{fetch_metadata_from_peer, fetch_metadata_from_stream, MetadataFetchConfig};
 pub use peer::{download_piece_from_peer, DownloadedPiece, PeerPieceRequest};
 pub use persist::{
-    PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentState,
-    PERSISTENT_STATE_SCHEMA_VERSION,
+    PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentSource,
+    PersistentTorrentState, PERSISTENT_STATE_SCHEMA_VERSION,
 };
 pub use rate::RateCounter;
 pub use session::{PeerSessionDriver, SessionFailure, SessionOutcome};

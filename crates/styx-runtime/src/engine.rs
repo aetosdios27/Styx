@@ -39,6 +39,7 @@ impl RuntimeEngine {
     pub fn apply(&mut self, command: RuntimeCommand) -> Result<(), RuntimeError> {
         let intent = match command {
             RuntimeCommand::AddPlan(plan) => StageIntent::Add { plan },
+            RuntimeCommand::AddMagnet(magnet) => StageIntent::AddMagnet { magnet },
             RuntimeCommand::Remove(id) => StageIntent::Remove {
                 id,
                 delete_data: false,

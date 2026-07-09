@@ -9,7 +9,8 @@ use styx_proto::{
 };
 use styx_runtime::{
     DaemonConfig, DaemonRuntime, PersistentState, PersistentStore, PersistentTorrent,
-    PersistentTorrentState, RuntimeConfig,
+    PersistentTorrentSource, PersistentTorrentState, RuntimeConfig,
+    PERSISTENT_STATE_SCHEMA_VERSION,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -198,9 +199,9 @@ async fn restart_rechecks_partial_piece_state_before_continuing() {
     let store = PersistentStore::open(temp.path().join("state")).unwrap();
     store
         .save(&PersistentState {
-            schema_version: 1,
+            schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
             torrents: vec![PersistentTorrent {
-                source_path: torrent,
+                source: PersistentTorrentSource::File { path: torrent },
                 destination,
                 state: PersistentTorrentState::Downloading,
                 added_at_unix: 1,
@@ -239,9 +240,9 @@ async fn daemon_restart_can_serve_block_from_restored_completed_torrent() {
     let store = PersistentStore::open(temp.path().join("state")).unwrap();
     store
         .save(&PersistentState {
-            schema_version: 1,
+            schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
             torrents: vec![PersistentTorrent {
-                source_path: torrent,
+                source: PersistentTorrentSource::File { path: torrent },
                 destination,
                 state: PersistentTorrentState::Complete,
                 added_at_unix: 1,

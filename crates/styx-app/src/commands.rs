@@ -11,6 +11,10 @@ pub enum ControlCommand {
         source: PathBuf,
         destination: Option<PathBuf>,
     },
+    AddMagnet {
+        uri: String,
+        destination: Option<PathBuf>,
+    },
     Remove {
         info_hash: InfoHashHex,
     },

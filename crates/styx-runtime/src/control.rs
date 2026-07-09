@@ -1,8 +1,9 @@
-use crate::{TorrentId, TorrentPlan};
+use crate::{MagnetAdd, TorrentId, TorrentPlan};
 
 #[derive(Clone, Debug)]
 pub enum RuntimeCommand {
     AddPlan(Box<TorrentPlan>),
+    AddMagnet(Box<MagnetAdd>),
     Torrent(TorrentId, TorrentCommand),
     Remove(TorrentId),
 }

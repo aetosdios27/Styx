@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::RuntimeError;
 
-pub const PERSISTENT_STATE_SCHEMA_VERSION: u16 = 1;
+pub const PERSISTENT_STATE_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PersistentState {
@@ -17,11 +17,18 @@ pub struct PersistentState {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PersistentTorrent {
-    pub source_path: PathBuf,
+    pub source: PersistentTorrentSource,
     pub destination: PathBuf,
     pub state: PersistentTorrentState,
     pub added_at_unix: u64,
     pub completed_at_unix: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PersistentTorrentSource {
+    File { path: PathBuf },
+    Magnet { uri: String },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -73,8 +80,20 @@ impl PersistentStore {
             return Ok(PersistentState::empty());
         }
         let bytes = fs::read(&self.state_path)?;
-        let state: PersistentState = serde_json::from_slice(&bytes)
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|_| RuntimeError::Persistence("invalid persistent state json"))?;
+        let version = value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(RuntimeError::Persistence("invalid persistent state json"))?;
+        let state = if version == 1 {
+            let legacy: PersistentStateV1 = serde_json::from_value(value)
+                .map_err(|_| RuntimeError::Persistence("invalid persistent state json"))?;
+            legacy.into_current()
+        } else {
+            serde_json::from_value(value)
+                .map_err(|_| RuntimeError::Persistence("invalid persistent state json"))?
+        };
         state.validate()
     }
 
@@ -92,5 +111,40 @@ impl PersistentStore {
     #[must_use]
     pub fn state_path(&self) -> &Path {
         &self.state_path
+    }
+}
+
+#[derive(Deserialize)]
+struct PersistentStateV1 {
+    torrents: Vec<PersistentTorrentV1>,
+}
+
+#[derive(Deserialize)]
+struct PersistentTorrentV1 {
+    source_path: PathBuf,
+    destination: PathBuf,
+    state: PersistentTorrentState,
+    added_at_unix: u64,
+    completed_at_unix: Option<u64>,
+}
+
+impl PersistentStateV1 {
+    fn into_current(self) -> PersistentState {
+        PersistentState {
+            schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
+            torrents: self
+                .torrents
+                .into_iter()
+                .map(|torrent| PersistentTorrent {
+                    source: PersistentTorrentSource::File {
+                        path: torrent.source_path,
+                    },
+                    destination: torrent.destination,
+                    state: torrent.state,
+                    added_at_unix: torrent.added_at_unix,
+                    completed_at_unix: torrent.completed_at_unix,
+                })
+                .collect(),
+        }
     }
 }
