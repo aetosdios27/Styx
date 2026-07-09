@@ -3,11 +3,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use styx_proto::PeerId;
 use tokio::sync::mpsc;
 
 use crate::{
-    download::download_all_pieces_from_web_seed, RuntimeCommand, RuntimeConfig, RuntimeEngine,
-    RuntimeEvent, TorrentCommand, TorrentId, TorrentPlan, TorrentStatus, TorrentTask,
+    download::download_all_pieces_from_web_seed, resolve_magnet_from_exact_peers, MagnetAdd,
+    MetadataFetchConfig, RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeEvent,
+    TorrentCommand, TorrentId, TorrentPlan, TorrentStatus, TorrentTask,
 };
 
 #[derive(Debug)]
@@ -37,6 +39,54 @@ pub(crate) enum BgEvent {
         id: TorrentId,
         reason: String,
     },
+    MagnetMetadataResolved {
+        id: TorrentId,
+        plan: Box<TorrentPlan>,
+    },
+}
+
+pub(crate) fn spawn_bg_magnet_resolution(
+    id: TorrentId,
+    add: MagnetAdd,
+    tx: mpsc::UnboundedSender<BgEvent>,
+    config: RuntimeConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let metadata_config = MetadataFetchConfig {
+            max_metadata_size: config.dht.metadata_size_limit,
+            request_limit: config.dht.metadata_request_limit,
+            timeout: config.source_timeout,
+            ..MetadataFetchConfig::default()
+        };
+        let resolution = tokio::time::timeout(
+            config.source_timeout,
+            resolve_magnet_from_exact_peers(add, PeerId::new(rand::random()), metadata_config),
+        )
+        .await;
+        match resolution {
+            Ok(Ok(resolved)) => {
+                let _ = tx.send(BgEvent::MagnetMetadataResolved {
+                    id,
+                    plan: Box::new(resolved.plan),
+                });
+            }
+            Ok(Err(err)) => {
+                let _ = tx.send(BgEvent::Failed {
+                    id,
+                    reason: err.to_string(),
+                });
+            }
+            Err(_) => {
+                let _ = tx.send(BgEvent::Failed {
+                    id,
+                    reason: "magnet metadata resolution timed out".to_owned(),
+                });
+            }
+        }
+    }))
 }
 
 pub(crate) fn spawn_bg_download(

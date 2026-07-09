@@ -14,7 +14,7 @@ use styx_app::{
 };
 
 use crate::{
-    driver::{spawn_bg_download, spawn_bg_seed, BgEvent},
+    driver::{spawn_bg_download, spawn_bg_magnet_resolution, spawn_bg_seed, BgEvent},
     MagnetAdd, PersistentState, PersistentStore, PersistentTorrent, PersistentTorrentSource,
     PersistentTorrentState, RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeError,
     RuntimeEvent, RuntimeSnapshot, TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot,
@@ -206,7 +206,7 @@ impl AppRuntime {
             destination: destination.clone(),
         };
         self.engine
-            .apply(RuntimeCommand::AddMagnet(Box::new(add)))
+            .apply(RuntimeCommand::AddMagnet(Box::new(add.clone())))
             .map_err(map_runtime_error)?;
         let magnet = styx_proto::parse_magnet_uri(&uri)
             .map_err(|err| AppError::InvalidCommand(err.to_string()))?;
@@ -230,6 +230,11 @@ impl AppRuntime {
                 completed_at_unix: None,
             },
         );
+        if let Some(handle) =
+            spawn_bg_magnet_resolution(id, add, self.bg_tx.clone(), self.engine.config().clone())
+        {
+            self.bg_handles.insert(id, handle);
+        }
         Ok(CommandResponse::TorrentAdded {
             info_hash: InfoHashHex::new(*id.as_bytes()),
             name,
@@ -443,6 +448,31 @@ impl TorrentRuntime for AppRuntime {
                 }
                 BgEvent::Runtime { event } => {
                     self.engine.push_event(event);
+                }
+                BgEvent::MagnetMetadataResolved { id, plan } => {
+                    self.bg_handles.remove(&id);
+                    let plan = *plan;
+                    if let Err(err) = self
+                        .engine
+                        .apply(RuntimeCommand::AddPlan(Box::new(plan.clone())))
+                        .and_then(|_| {
+                            self.engine
+                                .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))
+                        })
+                    {
+                        self.engine.push_event(RuntimeEvent::TaskFailed {
+                            torrent: id,
+                            reason: err.to_string(),
+                        });
+                        if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
+                            torrent.state = PersistentTorrentState::Failed;
+                        }
+                        continue;
+                    }
+                    self.pending_plans.insert(id, plan);
+                    if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
+                        torrent.state = PersistentTorrentState::Downloading;
+                    }
                 }
             }
         }

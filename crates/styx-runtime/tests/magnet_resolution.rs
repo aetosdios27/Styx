@@ -3,13 +3,17 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
+use styx_app::{ControlCommand, TorrentRuntime};
 use styx_proto::{
     decode_metadata_message, encode, encode_extension_handshake, encode_metadata_message,
     read_handshake, read_message, write_handshake, write_message, BencodeValue, ExtensionBits,
     ExtensionHandshake, Handshake, InfoHashV1, MetadataMessage, PeerId, PeerMessage,
     DEFAULT_MAX_PEER_FRAME_LEN,
 };
-use styx_runtime::{resolve_magnet_from_exact_peers, MagnetAdd, MetadataFetchConfig, RuntimeError};
+use styx_runtime::{
+    resolve_magnet_from_exact_peers, AppRuntime, MagnetAdd, MetadataFetchConfig, RuntimeConfig,
+    RuntimeError,
+};
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
@@ -44,7 +48,10 @@ async fn resolve_magnet_from_exact_peer_returns_verified_decentralized_plan() {
     .await
     .unwrap();
 
-    server.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(resolved.plan.info_hash, info_hash);
     assert!(resolved.plan.announce_urls.is_empty());
     assert!(resolved.plan.web_seed_urls.is_empty());
@@ -90,6 +97,51 @@ async fn resolve_magnet_rejects_metadata_with_wrong_info_hash() {
 
     server.await.unwrap();
     assert!(matches!(err, RuntimeError::Magnet(_)));
+}
+
+#[tokio::test]
+async fn app_runtime_add_magnet_resolves_metadata_from_exact_peer() {
+    let metadata = torrent_bytes_for_piece(b"abcdefgh");
+    let info_hash = info_hash_from_torrent_bytes(&metadata);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        serve_metadata_peer(&mut stream, info_hash, Bytes::from(metadata), 9).await;
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let magnet = format!(
+        "magnet:?xt=urn:btih:{}&x.pe={addr}",
+        hex(info_hash.as_bytes())
+    );
+    let config = RuntimeConfig {
+        source_timeout: Duration::from_secs(1),
+        ..RuntimeConfig::default()
+    };
+    let mut runtime = AppRuntime::new_with_config(config).unwrap();
+
+    runtime
+        .apply(ControlCommand::AddMagnet {
+            uri: magnet,
+            destination: Some(temp.path().join("downloads")),
+        })
+        .unwrap();
+
+    for _ in 0..50 {
+        runtime.tick();
+        if runtime.snapshot().totals.torrent_count == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    server.await.unwrap();
+    let snapshot = runtime.snapshot();
+    assert_eq!(snapshot.totals.torrent_count, 1);
+    assert_eq!(
+        snapshot.torrents[0].info_hash.as_bytes(),
+        info_hash.as_bytes()
+    );
 }
 
 async fn serve_metadata_peer(
