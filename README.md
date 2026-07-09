@@ -8,7 +8,7 @@ Styx is not a wrapper around an existing torrent engine. The core protocol, trac
 
 Styx is under active development. It can currently run real v1 torrent flows through the runtime path: parse `.torrent` files, announce to trackers, connect to TCP peers, download verified pieces, persist daemon state, and seed verified data back to peers.
 
-Next up: DHT bootstrap and magnet links.
+Phase 23 work is now underway: Styx has the protocol pieces for DHT/magnet support, a runtime-owned DHT worker primitive, BEP 9 metadata exchange, and an exact-peer magnet resolver. Full app-level DHT-only downloads are still being wired.
 
 | Capability | Status |
 |---|---|
@@ -22,8 +22,12 @@ Next up: DHT bootstrap and magnet links.
 | CLI, TUI, and headless mode | Implemented |
 | Tauri desktop shell | Implemented |
 | BitTorrent v2/hybrid groundwork | Implemented |
-| DHT runtime bootstrap | Next |
-| Magnet metadata exchange | Next |
+| DHT runtime worker | Implemented |
+| DHT peer source ingestion | Implemented |
+| Magnet URI parsing | Implemented |
+| BEP 9 metadata exchange | Implemented |
+| Exact-peer magnet resolution | Implemented as runtime API |
+| DHT-only app/CLI downloads | In progress |
 | uTP runtime integration | Planned |
 | NAT traversal, encryption, proxy support | Planned |
 
@@ -83,6 +87,8 @@ cargo run -p styx-cli -- daemon status --socket /tmp/styx.sock
 cargo run -p styx-cli -- daemon stop --socket /tmp/styx.sock
 ```
 
+Exact-peer magnet resolution is available as a runtime API for BEP 9 metadata exchange from `x.pe` peers. The CLI/GUI `add-magnet` flow and DHT-backed peer discovery are still in progress.
+
 Run the desktop app:
 
 ```sh
@@ -108,11 +114,11 @@ bun run dev
 ├── crates/
 │   ├── styx-app/       # shared app command/snapshot/event contract
 │   ├── styx-core/      # peer policy and transfer decisions
-│   ├── styx-dht/       # DHT protocol core
+│   ├── styx-dht/       # DHT protocol core and UDP socket adapter
 │   ├── styx-disk/      # storage, verification, resume
 │   ├── styx-ml/        # throttling detection core
-│   ├── styx-proto/     # bencode, metainfo, peer protocol
-│   ├── styx-runtime/   # orchestration, daemon, persistence
+│   ├── styx-proto/     # bencode, metainfo, peer protocol, magnets
+│   ├── styx-runtime/   # orchestration, daemon, persistence, metadata resolution
 │   ├── styx-tracker/   # HTTP/UDP tracker protocol
 │   └── styx-utp/       # uTP protocol implementation
 └── sim/
@@ -129,15 +135,16 @@ apps/styx-gui ─┘                            ├─ styx-disk
                                             ├─ styx-dht
                                             └─ styx-proto
 
-styx-utp and styx-ml are protocol/policy crates that are being integrated progressively into the runtime.
+styx-dht, styx-utp, and styx-ml are protocol/policy crates that are being integrated progressively into the runtime.
 ```
 
 ## Roadmap
 
 Near-term work:
 
-- DHT bootstrap owned by the runtime daemon
-- Magnet URI parsing and BEP 9 metadata exchange
+- Route the daemon-owned DHT worker into active torrents
+- Add app/CLI/GUI `add-magnet` command flow
+- Persist pending magnet resolution state
 - Trackerless torrent startup
 - Peer exchange and local service discovery
 - Platform packaging
@@ -154,4 +161,3 @@ Longer-term work:
 ## License
 
 No license has been declared yet.
-
