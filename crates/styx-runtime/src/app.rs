@@ -34,7 +34,11 @@ pub struct AppRuntime {
     bg_rx: mpsc::UnboundedReceiver<BgEvent>,
     bg_handles: HashMap<TorrentId, tokio::task::JoinHandle<()>>,
     pending_plans: HashMap<TorrentId, TorrentPlan>,
+    pending_magnets: HashMap<TorrentId, MagnetAdd>,
     persistent_torrents: BTreeMap<TorrentId, PersistentTorrent>,
+    dht_worker: Option<crate::DhtWorkerHandle>,
+    dht_events: Option<mpsc::UnboundedReceiver<crate::DhtRuntimeEvent>>,
+    dht_bootstrapped: bool,
 }
 
 #[derive(Debug)]
@@ -55,7 +59,11 @@ impl AppRuntime {
             bg_rx,
             bg_handles: HashMap::new(),
             pending_plans: HashMap::new(),
+            pending_magnets: HashMap::new(),
             persistent_torrents: BTreeMap::new(),
+            dht_worker: None,
+            dht_events: None,
+            dht_bootstrapped: false,
         }
     }
 
@@ -75,17 +83,24 @@ impl AppRuntime {
         let mut runtime = Self::new_with_config(config)?;
         for torrent in state.torrents {
             let PersistentTorrentSource::File { path: source_path } = &torrent.source else {
-                let magnet = match &torrent.source {
-                    PersistentTorrentSource::Magnet { uri } => styx_proto::parse_magnet_uri(uri)
-                        .map_err(|_| RuntimeError::Persistence("invalid persistent magnet uri"))?,
+                let uri = match &torrent.source {
+                    PersistentTorrentSource::Magnet { uri } => uri.clone(),
                     PersistentTorrentSource::File { .. } => unreachable!(),
                 };
+                let magnet = styx_proto::parse_magnet_uri(&uri)
+                    .map_err(|_| RuntimeError::Persistence("invalid persistent magnet uri"))?;
                 let info_hash = magnet.info_hash_v1.ok_or(RuntimeError::Persistence(
                     "persistent magnet requires a v1 info hash",
                 ))?;
-                runtime
-                    .persistent_torrents
-                    .insert(TorrentId::new(info_hash), torrent);
+                let id = TorrentId::new(info_hash);
+                runtime.pending_magnets.insert(
+                    id,
+                    MagnetAdd {
+                        uri,
+                        destination: torrent.destination.clone(),
+                    },
+                );
+                runtime.persistent_torrents.insert(id, torrent);
                 continue;
             };
             if !source_path.exists() {
@@ -149,6 +164,35 @@ impl AppRuntime {
             schema_version: PERSISTENT_STATE_SCHEMA_VERSION,
             torrents: self.persistent_torrents.values().cloned().collect(),
         }
+    }
+
+    pub fn attach_dht_worker(
+        &mut self,
+        worker: crate::DhtWorkerHandle,
+        events: mpsc::UnboundedReceiver<crate::DhtRuntimeEvent>,
+    ) -> Result<(), RuntimeError> {
+        worker.send(crate::DhtCommand::Bootstrap)?;
+        self.dht_worker = Some(worker);
+        self.dht_events = Some(events);
+        Ok(())
+    }
+
+    fn request_dht_peers(&self, id: TorrentId, add: &MagnetAdd) -> Result<(), RuntimeError> {
+        let Some(worker) = &self.dht_worker else {
+            return Ok(());
+        };
+        if !self.dht_bootstrapped {
+            return Ok(());
+        }
+        let magnet = styx_proto::parse_magnet_uri(&add.uri)
+            .map_err(|err| RuntimeError::Magnet(err.to_string()))?;
+        let info_hash = magnet
+            .info_hash_v1
+            .ok_or_else(|| RuntimeError::Magnet("v1 info hash required for DHT lookup".into()))?;
+        worker.send(crate::DhtCommand::GetPeers {
+            torrent: id,
+            info_hash: styx_dht::InfoHash::new(*info_hash.as_bytes()),
+        })
     }
 
     fn apply_add(
@@ -230,9 +274,17 @@ impl AppRuntime {
                 completed_at_unix: None,
             },
         );
-        if let Some(handle) =
-            spawn_bg_magnet_resolution(id, add, self.bg_tx.clone(), self.engine.config().clone())
-        {
+        self.pending_magnets.insert(id, add.clone());
+        if magnet.exact_peers.is_empty() {
+            self.request_dht_peers(id, &add)
+                .map_err(map_runtime_error)?;
+        } else if let Some(handle) = spawn_bg_magnet_resolution(
+            id,
+            add,
+            self.bg_tx.clone(),
+            self.engine.config().clone(),
+            Vec::new(),
+        ) {
             self.bg_handles.insert(id, handle);
         }
         Ok(CommandResponse::TorrentAdded {
@@ -396,6 +448,36 @@ impl TorrentRuntime for AppRuntime {
     }
 
     fn tick(&mut self) -> Vec<AppEvent> {
+        let mut dht_events = Vec::new();
+        if let Some(events) = &mut self.dht_events {
+            while let Ok(event) = events.try_recv() {
+                dht_events.push(event);
+            }
+        }
+        for event in dht_events {
+            match event {
+                crate::DhtRuntimeEvent::Bootstrapped { .. } => {
+                    self.dht_bootstrapped = true;
+                    for (id, add) in self.pending_magnets.clone() {
+                        let _ = self.request_dht_peers(id, &add);
+                    }
+                }
+                crate::DhtRuntimeEvent::PeersDiscovered { torrent, peers } => {
+                    if let Some(add) = self.pending_magnets.get(&torrent).cloned() {
+                        if let Some(handle) = spawn_bg_magnet_resolution(
+                            torrent,
+                            add,
+                            self.bg_tx.clone(),
+                            self.engine.config().clone(),
+                            peers,
+                        ) {
+                            self.bg_handles.insert(torrent, handle);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         // 1. Process background download events
         while let Ok(bg) = self.bg_rx.try_recv() {
             match bg {
@@ -451,6 +533,7 @@ impl TorrentRuntime for AppRuntime {
                 }
                 BgEvent::MagnetMetadataResolved { id, plan } => {
                     self.bg_handles.remove(&id);
+                    self.pending_magnets.remove(&id);
                     let plan = *plan;
                     if let Err(err) = self
                         .engine

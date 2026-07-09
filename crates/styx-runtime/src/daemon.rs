@@ -56,9 +56,22 @@ impl DaemonRuntime {
             ));
         }
         let store = PersistentStore::open(&config.state_dir)?;
-        let runtime = PersistentAppRuntime::open(config.runtime_config.clone(), store).await?;
+        let mut runtime = PersistentAppRuntime::open(config.runtime_config.clone(), store).await?;
+        let dht_worker = if config.runtime_config.dht.enabled
+            && !config.runtime_config.dht.bootstrap_nodes.is_empty()
+        {
+            let (events_tx, events_rx) = mpsc::unbounded_channel();
+            let worker =
+                crate::spawn_dht_worker(config.runtime_config.dht.clone(), events_tx).await?;
+            runtime
+                .runtime_mut()
+                .attach_dht_worker(worker.clone(), events_rx)?;
+            Some(worker)
+        } else {
+            None
+        };
         let (tx, rx) = mpsc::channel(64);
-        let join = tokio::spawn(run_daemon(config, runtime, rx));
+        let join = tokio::spawn(run_daemon(config, runtime, rx, dht_worker));
         Ok(DaemonHandle {
             tx,
             join: Arc::new(Mutex::new(Some(join))),
@@ -111,6 +124,7 @@ async fn run_daemon(
     config: DaemonConfig,
     mut runtime: PersistentAppRuntime,
     mut rx: mpsc::Receiver<DaemonRequest>,
+    dht_worker: Option<crate::DhtWorkerHandle>,
 ) {
     let started = Instant::now();
     let mut interval = tokio::time::interval(config.tick_interval);
@@ -136,6 +150,9 @@ async fn run_daemon(
             }
             else => break,
         }
+    }
+    if let Some(worker) = dht_worker {
+        let _ = worker.shutdown().await;
     }
 }
 

@@ -7,7 +7,7 @@ use styx_proto::PeerId;
 use tokio::sync::mpsc;
 
 use crate::{
-    download::download_all_pieces_from_web_seed, resolve_magnet_from_exact_peers, MagnetAdd,
+    download::download_all_pieces_from_web_seed, magnet::resolve_magnet_from_peers, MagnetAdd,
     MetadataFetchConfig, RuntimeCommand, RuntimeConfig, RuntimeEngine, RuntimeEvent,
     TorrentCommand, TorrentId, TorrentPlan, TorrentStatus, TorrentTask,
 };
@@ -50,6 +50,7 @@ pub(crate) fn spawn_bg_magnet_resolution(
     add: MagnetAdd,
     tx: mpsc::UnboundedSender<BgEvent>,
     config: RuntimeConfig,
+    peers: Vec<SocketAddr>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if tokio::runtime::Handle::try_current().is_err() {
         return None;
@@ -61,10 +62,23 @@ pub(crate) fn spawn_bg_magnet_resolution(
             timeout: config.source_timeout,
             ..MetadataFetchConfig::default()
         };
-        let resolution = tokio::time::timeout(
-            config.source_timeout,
-            resolve_magnet_from_exact_peers(add, PeerId::new(rand::random()), metadata_config),
-        )
+        let resolution = tokio::time::timeout(config.source_timeout, async {
+            let magnet = styx_proto::parse_magnet_uri(&add.uri)
+                .map_err(|err| crate::RuntimeError::Magnet(err.to_string()))?;
+            let peers = if peers.is_empty() {
+                magnet.exact_peers.clone()
+            } else {
+                peers
+            };
+            resolve_magnet_from_peers(
+                add,
+                magnet,
+                peers,
+                PeerId::new(rand::random()),
+                metadata_config,
+            )
+            .await
+        })
         .await;
         match resolution {
             Ok(Ok(resolved)) => {

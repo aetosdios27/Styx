@@ -4,6 +4,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use styx_app::{ControlCommand, TorrentRuntime};
+use styx_dht::{CompactPeer, DhtMessage, DhtQuery, DhtResponse, DhtSocket, NodeId};
 use styx_proto::{
     decode_metadata_message, encode, encode_extension_handshake, encode_metadata_message,
     read_handshake, read_message, write_handshake, write_message, BencodeValue, ExtensionBits,
@@ -11,8 +12,8 @@ use styx_proto::{
     DEFAULT_MAX_PEER_FRAME_LEN,
 };
 use styx_runtime::{
-    resolve_magnet_from_exact_peers, AppRuntime, MagnetAdd, MetadataFetchConfig, RuntimeConfig,
-    RuntimeError,
+    resolve_magnet_from_exact_peers, spawn_dht_worker, AppRuntime, DhtRuntimeConfig, MagnetAdd,
+    MetadataFetchConfig, RuntimeConfig, RuntimeError,
 };
 use tokio::net::{TcpListener, TcpStream};
 
@@ -142,6 +143,100 @@ async fn app_runtime_add_magnet_resolves_metadata_from_exact_peer() {
         snapshot.torrents[0].info_hash.as_bytes(),
         info_hash.as_bytes()
     );
+}
+
+#[tokio::test]
+async fn app_runtime_add_magnet_resolves_metadata_from_dht_peer_without_tracker() {
+    let metadata = torrent_bytes_for_piece(b"abcdefgh");
+    let info_hash = info_hash_from_torrent_bytes(&metadata);
+    let metadata_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let metadata_addr = metadata_listener.local_addr().unwrap();
+    let metadata_server = tokio::spawn(async move {
+        let (mut stream, _) = metadata_listener.accept().await.unwrap();
+        serve_metadata_peer(&mut stream, info_hash, Bytes::from(metadata), 9).await;
+    });
+    let dht = DhtSocket::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let dht_addr = dht.local_addr().unwrap();
+    let dht_server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let event = dht.poll_once().await.unwrap();
+            let DhtMessage::Query {
+                transaction_id,
+                query,
+            } = event.message
+            else {
+                panic!("expected DHT query");
+            };
+            let response = match query {
+                DhtQuery::Ping { .. } => DhtResponse::Ping {
+                    id: NodeId::new([7; 20]),
+                },
+                DhtQuery::GetPeers { .. } => DhtResponse::GetPeers {
+                    id: NodeId::new([7; 20]),
+                    token: Bytes::from_static(b"token"),
+                    values: vec![CompactPeer::new(metadata_addr)],
+                    nodes: Vec::new(),
+                    nodes6: Vec::new(),
+                    external_ip: None,
+                },
+                other => panic!("unexpected DHT query: {other:?}"),
+            };
+            dht.send_to(
+                &DhtMessage::Response {
+                    transaction_id,
+                    response,
+                },
+                event.source,
+            )
+            .await
+            .unwrap();
+        }
+    });
+    let dht_config = DhtRuntimeConfig {
+        enabled: true,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        bootstrap_nodes: vec![dht_addr],
+        query_timeout: Duration::from_secs(1),
+        metadata_size_limit: 64 * 1024,
+        metadata_request_limit: 8,
+        tick_interval: Duration::from_millis(5),
+    };
+    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let worker = spawn_dht_worker(dht_config.clone(), events_tx)
+        .await
+        .unwrap();
+    let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
+        source_timeout: Duration::from_secs(1),
+        dht: dht_config,
+        ..RuntimeConfig::default()
+    })
+    .unwrap();
+    runtime
+        .attach_dht_worker(worker.clone(), events_rx)
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+
+    runtime
+        .apply(ControlCommand::AddMagnet {
+            uri: format!("magnet:?xt=urn:btih:{}", hex(info_hash.as_bytes())),
+            destination: Some(temp.path().join("downloads")),
+        })
+        .unwrap();
+
+    for _ in 0..100 {
+        runtime.tick();
+        if runtime.snapshot().totals.torrent_count == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    worker.shutdown().await.unwrap();
+    dht_server.await.unwrap();
+    metadata_server.await.unwrap();
+    assert_eq!(runtime.snapshot().totals.torrent_count, 1);
 }
 
 async fn serve_metadata_peer(

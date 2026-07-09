@@ -64,7 +64,7 @@ pub enum DhtRuntimeEvent {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DhtWorkerHandle {
     tx: mpsc::UnboundedSender<DhtCommand>,
     join: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,

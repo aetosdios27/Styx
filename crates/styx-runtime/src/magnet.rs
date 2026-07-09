@@ -22,18 +22,29 @@ pub async fn resolve_magnet_from_exact_peers(
     config: MetadataFetchConfig,
 ) -> Result<ResolvedMagnet, RuntimeError> {
     let magnet = parse_magnet_uri(&add.uri).map_err(|err| RuntimeError::Magnet(err.to_string()))?;
+    let peers = magnet.exact_peers.clone();
+    resolve_magnet_from_peers(add, magnet, peers, peer_id, config).await
+}
+
+pub(crate) async fn resolve_magnet_from_peers(
+    add: MagnetAdd,
+    magnet: MagnetUri,
+    peers: Vec<std::net::SocketAddr>,
+    peer_id: PeerId,
+    config: MetadataFetchConfig,
+) -> Result<ResolvedMagnet, RuntimeError> {
     let info_hash = magnet.info_hash_v1.ok_or_else(|| {
         RuntimeError::Magnet("v1 info hash is required for metadata fetch".into())
     })?;
-    if magnet.exact_peers.is_empty() {
+    if peers.is_empty() {
         return Err(RuntimeError::Magnet(
-            "magnet does not contain exact peers for direct metadata fetch".into(),
+            "magnet metadata resolution requires at least one peer".into(),
         ));
     }
 
     let mut last_error = None;
-    for peer in &magnet.exact_peers {
-        match fetch_metadata_from_peer(*peer, info_hash, peer_id, config).await {
+    for peer in peers {
+        match fetch_metadata_from_peer(peer, info_hash, peer_id, config).await {
             Ok(bytes) => {
                 let metainfo = decode_torrent(&bytes)?;
                 validate_magnet_info_hash(info_hash, metainfo.info_hash_v1)?;
