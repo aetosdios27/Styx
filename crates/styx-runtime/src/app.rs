@@ -35,6 +35,7 @@ pub struct AppRuntime {
     bg_handles: HashMap<TorrentId, tokio::task::JoinHandle<()>>,
     pending_plans: HashMap<TorrentId, TorrentPlan>,
     pending_magnets: HashMap<TorrentId, MagnetAdd>,
+    pending_download_peers: HashMap<TorrentId, Vec<std::net::SocketAddr>>,
     persistent_torrents: BTreeMap<TorrentId, PersistentTorrent>,
     dht_worker: Option<crate::DhtWorkerHandle>,
     dht_events: Option<mpsc::UnboundedReceiver<crate::DhtRuntimeEvent>>,
@@ -60,6 +61,7 @@ impl AppRuntime {
             bg_handles: HashMap::new(),
             pending_plans: HashMap::new(),
             pending_magnets: HashMap::new(),
+            pending_download_peers: HashMap::new(),
             persistent_torrents: BTreeMap::new(),
             dht_worker: None,
             dht_events: None,
@@ -464,6 +466,7 @@ impl TorrentRuntime for AppRuntime {
                 }
                 crate::DhtRuntimeEvent::PeersDiscovered { torrent, peers } => {
                     if let Some(add) = self.pending_magnets.get(&torrent).cloned() {
+                        self.pending_download_peers.insert(torrent, peers.clone());
                         if let Some(handle) = spawn_bg_magnet_resolution(
                             torrent,
                             add,
@@ -474,6 +477,15 @@ impl TorrentRuntime for AppRuntime {
                             self.bg_handles.insert(torrent, handle);
                         }
                     }
+                }
+                crate::DhtRuntimeEvent::LookupExhausted { torrent } => {
+                    if let Some(record) = self.persistent_torrents.get_mut(&torrent) {
+                        record.state = PersistentTorrentState::Failed;
+                    }
+                    self.engine.push_event(RuntimeEvent::TaskFailed {
+                        torrent,
+                        reason: "DHT peer lookup exhausted".to_owned(),
+                    });
                 }
                 _ => {}
             }
@@ -531,9 +543,10 @@ impl TorrentRuntime for AppRuntime {
                 BgEvent::Runtime { event } => {
                     self.engine.push_event(event);
                 }
-                BgEvent::MagnetMetadataResolved { id, plan } => {
+                BgEvent::MagnetMetadataResolved { id, plan, peers } => {
                     self.bg_handles.remove(&id);
                     self.pending_magnets.remove(&id);
+                    self.pending_download_peers.insert(id, peers);
                     let plan = *plan;
                     if let Err(err) = self
                         .engine
@@ -557,6 +570,26 @@ impl TorrentRuntime for AppRuntime {
                         torrent.state = PersistentTorrentState::Downloading;
                     }
                 }
+                BgEvent::MagnetResolutionFailed {
+                    id,
+                    reason,
+                    try_dht,
+                } => {
+                    self.bg_handles.remove(&id);
+                    if try_dht && self.dht_worker.is_some() {
+                        if let Some(add) = self.pending_magnets.get(&id) {
+                            let _ = self.request_dht_peers(id, add);
+                            continue;
+                        }
+                    }
+                    if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
+                        torrent.state = PersistentTorrentState::Failed;
+                    }
+                    self.engine.push_event(RuntimeEvent::TaskFailed {
+                        torrent: id,
+                        reason,
+                    });
+                }
             }
         }
 
@@ -570,7 +603,11 @@ impl TorrentRuntime for AppRuntime {
                     if let Some(plan) = self.pending_plans.get(&tor.id).cloned() {
                         let tx = self.bg_tx.clone();
                         let config = self.engine.config().clone();
-                        if let Some(handle) = spawn_bg_download(plan, tx, config) {
+                        let peers = self
+                            .pending_download_peers
+                            .remove(&tor.id)
+                            .unwrap_or_default();
+                        if let Some(handle) = spawn_bg_download(plan, tx, config, peers) {
                             self.bg_handles.insert(tor.id, handle);
                         }
                     }

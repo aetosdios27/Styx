@@ -101,6 +101,45 @@ async fn resolve_magnet_rejects_metadata_with_wrong_info_hash() {
 }
 
 #[tokio::test]
+async fn magnet_resolution_skips_wrong_metadata_hash_and_uses_next_peer() {
+    let expected = torrent_bytes_for_piece(b"abcdefgh");
+    let info_hash = info_hash_from_torrent_bytes(&expected);
+    let wrong = torrent_bytes_for_piece(b"zzzzzzzz");
+    let bad_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let bad_addr = bad_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = bad_listener.accept().await.unwrap();
+        serve_metadata_peer(&mut stream, info_hash, Bytes::from(wrong), 9).await;
+    });
+    let good_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let good_addr = good_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = good_listener.accept().await.unwrap();
+        serve_metadata_peer(&mut stream, info_hash, Bytes::from(expected), 9).await;
+    });
+    let temp = tempfile::tempdir().unwrap();
+
+    let resolved = resolve_magnet_from_exact_peers(
+        MagnetAdd {
+            uri: format!(
+                "magnet:?xt=urn:btih:{}&x.pe={bad_addr}&x.pe={good_addr}",
+                hex(info_hash.as_bytes())
+            ),
+            destination: temp.path().join("downloads"),
+        },
+        PeerId::new([1; 20]),
+        MetadataFetchConfig {
+            timeout: Duration::from_secs(1),
+            ..MetadataFetchConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(resolved.plan.info_hash, info_hash);
+}
+
+#[tokio::test]
 async fn app_runtime_add_magnet_resolves_metadata_from_exact_peer() {
     let metadata = torrent_bytes_for_piece(b"abcdefgh");
     let info_hash = info_hash_from_torrent_bytes(&metadata);
@@ -237,6 +276,75 @@ async fn app_runtime_add_magnet_resolves_metadata_from_dht_peer_without_tracker(
     dht_server.await.unwrap();
     metadata_server.await.unwrap();
     assert_eq!(runtime.snapshot().totals.torrent_count, 1);
+}
+
+#[tokio::test]
+async fn magnet_resolution_times_out_without_hanging_runtime() {
+    let dht = DhtSocket::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let dht_addr = dht.local_addr().unwrap();
+    tokio::spawn(async move {
+        let ping = dht.poll_once().await.unwrap();
+        let DhtMessage::Query { transaction_id, .. } = ping.message else {
+            panic!("expected bootstrap ping");
+        };
+        dht.send_to(
+            &DhtMessage::Response {
+                transaction_id,
+                response: DhtResponse::Ping {
+                    id: NodeId::new([8; 20]),
+                },
+            },
+            ping.source,
+        )
+        .await
+        .unwrap();
+        let _unanswered_get_peers = dht.poll_once().await.unwrap();
+    });
+    let dht_config = DhtRuntimeConfig {
+        enabled: true,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        bootstrap_nodes: vec![dht_addr],
+        query_timeout: Duration::from_millis(30),
+        tick_interval: Duration::from_millis(5),
+        ..DhtRuntimeConfig::default()
+    };
+    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let worker = spawn_dht_worker(dht_config.clone(), events_tx)
+        .await
+        .unwrap();
+    let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
+        dht: dht_config,
+        ..RuntimeConfig::default()
+    })
+    .unwrap();
+    runtime
+        .attach_dht_worker(worker.clone(), events_rx)
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    runtime
+        .apply(ControlCommand::AddMagnet {
+            uri: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".into(),
+            destination: Some(temp.path().join("downloads")),
+        })
+        .unwrap();
+
+    for _ in 0..100 {
+        runtime.tick();
+        if runtime.persistent_state().torrents[0].state
+            == styx_runtime::PersistentTorrentState::Failed
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    worker.shutdown().await.unwrap();
+    assert_eq!(
+        runtime.persistent_state().torrents[0].state,
+        styx_runtime::PersistentTorrentState::Failed
+    );
 }
 
 async fn serve_metadata_peer(

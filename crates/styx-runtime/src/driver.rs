@@ -42,6 +42,12 @@ pub(crate) enum BgEvent {
     MagnetMetadataResolved {
         id: TorrentId,
         plan: Box<TorrentPlan>,
+        peers: Vec<SocketAddr>,
+    },
+    MagnetResolutionFailed {
+        id: TorrentId,
+        reason: String,
+        try_dht: bool,
     },
 }
 
@@ -56,6 +62,7 @@ pub(crate) fn spawn_bg_magnet_resolution(
         return None;
     }
     Some(tokio::spawn(async move {
+        let try_dht = peers.is_empty();
         let metadata_config = MetadataFetchConfig {
             max_metadata_size: config.dht.metadata_size_limit,
             request_limit: config.dht.metadata_request_limit,
@@ -68,7 +75,7 @@ pub(crate) fn spawn_bg_magnet_resolution(
             let peers = if peers.is_empty() {
                 magnet.exact_peers.clone()
             } else {
-                peers
+                peers.clone()
             };
             resolve_magnet_from_peers(
                 add,
@@ -85,18 +92,21 @@ pub(crate) fn spawn_bg_magnet_resolution(
                 let _ = tx.send(BgEvent::MagnetMetadataResolved {
                     id,
                     plan: Box::new(resolved.plan),
+                    peers,
                 });
             }
             Ok(Err(err)) => {
-                let _ = tx.send(BgEvent::Failed {
+                let _ = tx.send(BgEvent::MagnetResolutionFailed {
                     id,
                     reason: err.to_string(),
+                    try_dht,
                 });
             }
             Err(_) => {
-                let _ = tx.send(BgEvent::Failed {
+                let _ = tx.send(BgEvent::MagnetResolutionFailed {
                     id,
                     reason: "magnet metadata resolution timed out".to_owned(),
+                    try_dht,
                 });
             }
         }
@@ -107,12 +117,13 @@ pub(crate) fn spawn_bg_download(
     plan: TorrentPlan,
     tx: mpsc::UnboundedSender<BgEvent>,
     config: RuntimeConfig,
+    initial_peers: Vec<SocketAddr>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if tokio::runtime::Handle::try_current().is_err() {
         return None;
     }
     Some(tokio::spawn(async move {
-        run_bg_download(plan, tx, config).await;
+        run_bg_download(plan, tx, config, initial_peers).await;
     }))
 }
 
@@ -133,6 +144,7 @@ async fn run_bg_download(
     plan: TorrentPlan,
     tx: mpsc::UnboundedSender<BgEvent>,
     config: RuntimeConfig,
+    initial_peers: Vec<SocketAddr>,
 ) {
     let id = plan.id;
     let total_size = plan.total_size;
@@ -153,7 +165,7 @@ async fn run_bg_download(
         total_bytes: total_size,
     });
 
-    match run_peer_download(&plan, &tx, config.clone()).await {
+    match run_peer_download(&plan, &tx, config.clone(), initial_peers).await {
         PeerAttempt::Completed => return,
         PeerAttempt::Unavailable => {}
         PeerAttempt::Failed(reason) if plan.web_seed_urls.is_empty() => {
@@ -268,8 +280,9 @@ async fn run_peer_download(
     plan: &TorrentPlan,
     tx: &mpsc::UnboundedSender<BgEvent>,
     config: RuntimeConfig,
+    initial_peers: Vec<SocketAddr>,
 ) -> PeerAttempt {
-    if plan.announce_urls.is_empty() {
+    if plan.announce_urls.is_empty() && initial_peers.is_empty() {
         return PeerAttempt::Unavailable;
     }
 
@@ -278,6 +291,7 @@ async fn run_peer_download(
         Ok(task) => task,
         Err(err) => return PeerAttempt::Failed(err.to_string()),
     };
+    task.add_dht_peers(initial_peers);
     if let Err(err) = task.apply(TorrentCommand::Start) {
         return PeerAttempt::Failed(err.to_string());
     }
@@ -479,9 +493,12 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        tokio::time::timeout(Duration::from_secs(5), run_bg_download(plan, tx, config))
-            .await
-            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_bg_download(plan, tx, config, Vec::new()),
+        )
+        .await
+        .unwrap();
 
         let mut completed = false;
         while let Ok(event) = rx.try_recv() {
@@ -510,9 +527,12 @@ mod tests {
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        tokio::time::timeout(Duration::from_secs(5), run_bg_download(plan, tx, config))
-            .await
-            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_bg_download(plan, tx, config, Vec::new()),
+        )
+        .await
+        .unwrap();
 
         let mut completed = false;
         while let Ok(event) = rx.try_recv() {
@@ -521,6 +541,33 @@ mod tests {
         assert!(
             completed,
             "web seed fallback should complete after peer idle"
+        );
+    }
+
+    #[tokio::test]
+    async fn trackerless_background_download_completes_from_dht_peer() {
+        let temp = tempfile::tempdir().unwrap();
+        let piece_bytes = Bytes::from_static(b"abcd");
+        let peer = serve_peer(piece_bytes.clone()).await;
+        let plan = make_plan(temp.path(), None, Vec::new(), piece_bytes.as_ref());
+        let config = RuntimeConfig {
+            source_timeout: Duration::from_secs(2),
+            snapshot_interval: Duration::from_millis(10),
+            ..RuntimeConfig::default()
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_bg_download(plan, tx, config, vec![peer]),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .any(|event| matches!(event, BgEvent::Completed { .. })),
+            "DHT peer-backed background download should verify and complete"
         );
     }
 

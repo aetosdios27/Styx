@@ -46,10 +46,17 @@ pub(crate) async fn resolve_magnet_from_peers(
     for peer in peers {
         match fetch_metadata_from_peer(peer, info_hash, peer_id, config).await {
             Ok(bytes) => {
-                let metainfo = decode_torrent(&bytes)?;
-                validate_magnet_info_hash(info_hash, metainfo.info_hash_v1)?;
-                let plan = TorrentPlan::from_metainfo_decentralized(metainfo, &add.destination)?;
-                return Ok(ResolvedMagnet { magnet, plan });
+                let candidate =
+                    decode_torrent(&bytes)
+                        .map_err(RuntimeError::from)
+                        .and_then(|metainfo| {
+                            validate_magnet_info_hash(info_hash, metainfo.info_hash_v1)?;
+                            TorrentPlan::from_metainfo_decentralized(metainfo, &add.destination)
+                        });
+                match candidate {
+                    Ok(plan) => return Ok(ResolvedMagnet { magnet, plan }),
+                    Err(err) => last_error = Some(err.to_string()),
+                }
             }
             Err(err) => last_error = Some(err.to_string()),
         }
