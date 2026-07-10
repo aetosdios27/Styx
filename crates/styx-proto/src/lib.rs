@@ -15,6 +15,7 @@ pub mod magnet_v2;
 pub mod metadata;
 pub mod metainfo;
 pub mod peer;
+pub mod pex;
 
 pub use bencode::{decode, decode_with_span, encode, BencodeError, BencodeValue, DecodedBencode};
 pub use extension::{
@@ -42,4 +43,7 @@ pub use peer::{
     encode_message, read_handshake, read_message, validate_handshake, write_handshake,
     write_message, ExtensionBits, Handshake, PeerId, PeerMessage, PeerWireError,
     DEFAULT_MAX_PEER_FRAME_LEN, PEER_HANDSHAKE_LEN,
+};
+pub use pex::{
+    decode_pex_message, encode_pex_message, PexError, PexMessage, MAX_PEX_CONTACTS_PER_FAMILY,
 };

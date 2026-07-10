@@ -27,6 +27,7 @@ pub(crate) struct PeerIo {
     read_handle: JoinHandle<()>,
     write_handle: JoinHandle<()>,
     disconnected: bool,
+    supports_extended: bool,
 }
 
 #[allow(dead_code)]
@@ -50,13 +51,13 @@ impl PeerIo {
         let (mut read_half, mut write_half) = stream.into_split();
 
         let our_handshake = Handshake {
-            reserved: ExtensionBits::default(),
+            reserved: ExtensionBits::default().with_extended(),
             info_hash,
             peer_id,
         };
 
         write_handshake(&mut write_half, &our_handshake).await?;
-        let _peer_handshake = read_handshake(&mut read_half, info_hash).await?;
+        let peer_handshake = read_handshake(&mut read_half, info_hash).await?;
 
         let (message_tx, message_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -71,6 +72,7 @@ impl PeerIo {
             read_handle,
             write_handle,
             disconnected: false,
+            supports_extended: peer_handshake.reserved.supports_extended(),
         })
     }
 
@@ -82,6 +84,10 @@ impl PeerIo {
         self.command_tx
             .send(PeerIoCommand::Send(msg))
             .map_err(|_| ())
+    }
+
+    pub fn supports_extended(&self) -> bool {
+        self.supports_extended
     }
 
     pub fn drain(&mut self) -> Vec<PeerMessage> {

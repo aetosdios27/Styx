@@ -1,17 +1,20 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     net::SocketAddr,
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
 use rand::RngCore;
-use styx_core::{BlockRequest, PeerAction, PeerConnectionManager, TorrentState};
+use styx_core::{BlockRequest, PeerAction, PeerConnectionManager, PeerKey, TorrentState};
 use styx_disk::{
     block_specs_for_piece, BlockSpec, PieceCompletion, PieceIndex, PieceManager, ResumeSummary,
     VerificationResult,
 };
-use styx_proto::{PeerId, PeerMessage};
+use styx_proto::{
+    decode_extension_handshake, decode_pex_message, encode_extension_handshake, ExtensionHandshake,
+    PeerId, PeerMessage,
+};
 
 use styx_tracker::HttpTrackerClient;
 
@@ -20,6 +23,8 @@ use crate::{
     SourceEndpoint, SourceFailure, SourceId, SourceTable, TorrentCommand, TorrentId, TorrentPlan,
     TorrentSnapshot, TorrentStatus,
 };
+
+const LOCAL_PEX_MESSAGE_ID: u8 = 1;
 
 #[derive(Debug)]
 pub struct TorrentTask {
@@ -45,6 +50,7 @@ pub struct TorrentTask {
     pending_verify_peer_addrs: BTreeMap<PieceIndex, Vec<SocketAddr>>,
     last_announce: Option<Instant>,
     announce_interval: Duration,
+    remote_pex_ids: HashMap<PeerKey, u8>,
 }
 
 impl TorrentTask {
@@ -84,6 +90,7 @@ impl TorrentTask {
             pending_verify: Vec::new(),
             pending_verify_peers: BTreeMap::new(),
             pending_verify_peer_addrs: BTreeMap::new(),
+            remote_pex_ids: HashMap::new(),
         }
     }
 
@@ -141,6 +148,7 @@ impl TorrentTask {
             pending_verify: Vec::new(),
             pending_verify_peers: BTreeMap::new(),
             pending_verify_peer_addrs: BTreeMap::new(),
+            remote_pex_ids: HashMap::new(),
         })
     }
 
@@ -166,6 +174,26 @@ impl TorrentTask {
                 continue;
             }
             if self.sources.add_dht_peer(peer).is_ok() {
+                added += 1;
+            }
+        }
+        added
+    }
+
+    pub fn ingest_pex_peers(&mut self, peers: impl IntoIterator<Item = SocketAddr>) -> usize {
+        if !DiscoveryPolicy::from_metainfo(&self.plan.metainfo).pex_allowed() {
+            return 0;
+        }
+        let mut added = 0;
+        let mut ipv4 = 0;
+        let mut ipv6 = 0;
+        for peer in peers {
+            let family_count = if peer.is_ipv4() { &mut ipv4 } else { &mut ipv6 };
+            if *family_count == styx_proto::MAX_PEX_CONTACTS_PER_FAMILY {
+                continue;
+            }
+            *family_count += 1;
+            if is_public_pex_endpoint(peer) && self.sources.add_pex_peer(peer).is_ok() {
                 added += 1;
             }
         }
@@ -261,6 +289,7 @@ impl TorrentTask {
                 Ok(key) => {
                     let _ = self.sources.record_success(candidate.id);
                     let _ = self.manager.add_peer(key);
+                    self.advertise_pex(key);
                     events.push(RuntimeEvent::PeerConnected {
                         torrent: self.plan.id,
                         addr,
@@ -477,6 +506,9 @@ impl TorrentTask {
         // Drain incoming messages from all peers
         let (messages, dead) = self.peers.drain_messages();
         for (key, msg) in messages {
+            if self.handle_pex_wire_message(key, &msg) {
+                continue;
+            }
             if let Ok(actions) = self.manager.handle_message(key, msg, now) {
                 events.extend(self.execute_actions(actions));
             }
@@ -524,6 +556,9 @@ impl TorrentTask {
         let now = Instant::now();
         let (messages, dead) = self.peers.drain_messages();
         for (key, msg) in messages {
+            if self.handle_pex_wire_message(key, &msg) {
+                continue;
+            }
             if let Ok(actions) = self.manager.handle_message(key, msg, now) {
                 events.extend(self.execute_actions_with_uploads(actions).await);
             }
@@ -540,6 +575,55 @@ impl TorrentTask {
             events.extend(self.execute_actions_with_uploads(actions).await);
         }
         Ok(events)
+    }
+
+    fn advertise_pex(&self, peer: PeerKey) {
+        if !DiscoveryPolicy::from_metainfo(&self.plan.metainfo).pex_allowed()
+            || !self.peers.supports_extended(peer)
+        {
+            return;
+        }
+        let mut handshake = ExtensionHandshake::default();
+        handshake
+            .messages
+            .insert("ut_pex".to_owned(), LOCAL_PEX_MESSAGE_ID);
+        let _ = self.peers.send_message(
+            peer,
+            PeerMessage::Extended {
+                extension_id: 0,
+                payload: Bytes::from(encode_extension_handshake(&handshake)),
+            },
+        );
+    }
+
+    fn handle_pex_wire_message(&mut self, peer: PeerKey, message: &PeerMessage) -> bool {
+        if !DiscoveryPolicy::from_metainfo(&self.plan.metainfo).pex_allowed() {
+            return matches!(message, PeerMessage::Extended { .. });
+        }
+        let PeerMessage::Extended {
+            extension_id,
+            payload,
+        } = message
+        else {
+            return false;
+        };
+        if *extension_id == 0 {
+            if let Ok(handshake) = decode_extension_handshake(payload) {
+                if let Some(id) = handshake.message_id("ut_pex") {
+                    self.remote_pex_ids.insert(peer, id);
+                } else {
+                    self.remote_pex_ids.remove(&peer);
+                }
+            }
+            return true;
+        }
+        if *extension_id == LOCAL_PEX_MESSAGE_ID && self.remote_pex_ids.contains_key(&peer) {
+            if let Ok(pex) = decode_pex_message(payload) {
+                self.ingest_pex_peers(pex.added.into_iter().chain(pex.added6));
+            }
+            return true;
+        }
+        false
     }
 
     fn tick_state(&mut self) -> Result<Vec<RuntimeEvent>, RuntimeError> {
@@ -773,6 +857,35 @@ impl TorrentTask {
             from,
             to,
         }])
+    }
+}
+
+fn is_public_pex_endpoint(endpoint: SocketAddr) -> bool {
+    if endpoint.port() == 0 {
+        return false;
+    }
+    match endpoint.ip() {
+        std::net::IpAddr::V4(ip) => {
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || ip.is_documentation()
+                || ip.octets()[0] == 0
+                || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
+                || (ip.octets()[0] == 198 && (18..=19).contains(&ip.octets()[1]))
+                || ip.octets()[0] >= 240)
+        }
+        std::net::IpAddr::V6(ip) => {
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || (ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8))
+        }
     }
 }
 

@@ -91,6 +91,12 @@ impl PeerTable {
         self.by_key.get(&key).ok_or(())?.io.send(msg)
     }
 
+    pub fn supports_extended(&self, key: PeerKey) -> bool {
+        self.by_key
+            .get(&key)
+            .is_some_and(|peer| peer.io.supports_extended())
+    }
+
     pub fn peer_addr(&self, key: PeerKey) -> Option<SocketAddr> {
         self.by_key.get(&key).map(|p| p.addr)
     }
