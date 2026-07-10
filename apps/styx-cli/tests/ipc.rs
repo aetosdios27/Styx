@@ -27,6 +27,19 @@ fn command_codec_round_trips_one_command_per_line() {
 }
 
 #[test]
+fn command_codec_round_trips_add_magnet_without_changing_uri() {
+    let command = ControlCommand::AddMagnet {
+        uri: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=a%20b".to_owned(),
+        destination: Some("/tmp/downloads".into()),
+    };
+
+    let encoded = encode_command(&command).unwrap();
+    let decoded = decode_command(&encoded).unwrap();
+
+    assert_eq!(decoded, command);
+}
+
+#[test]
 fn response_envelope_serializes_failure() {
     let encoded = encode_response(&CommandResponseEnvelope::err("bad command")).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();

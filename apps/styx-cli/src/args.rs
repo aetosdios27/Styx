@@ -36,6 +36,13 @@ pub enum Command {
         #[arg(long, value_name = "DIR")]
         destination: Option<PathBuf>,
     },
+    #[command(about = "Add a magnet URI to the local runtime")]
+    AddMagnet {
+        #[arg(value_name = "MAGNET_URI")]
+        uri: String,
+        #[arg(long, value_name = "DIR")]
+        destination: PathBuf,
+    },
     #[command(about = "Remove a torrent by v1 info hash")]
     Remove {
         #[arg(value_name = "INFO_HASH")]

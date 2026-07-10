@@ -28,6 +28,23 @@ fn invalid_hash_command_returns_error() {
     assert!(err.to_string().contains("40 hex characters"));
 }
 
+#[test]
+fn direct_add_magnet_invalid_uri_returns_error_json() {
+    let cli = Cli::parse_from([
+        "styx-cli",
+        "add-magnet",
+        "not-a-magnet",
+        "--destination",
+        "/tmp/downloads",
+    ]);
+    let mut output = Vec::new();
+
+    run_command_once(cli, &mut output).unwrap();
+
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["ok"], false);
+}
+
 #[tokio::test]
 async fn daemon_status_command_writes_success_json() {
     let root = unique_temp_dir("styx-cli-daemon-status");

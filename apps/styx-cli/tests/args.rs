@@ -38,6 +38,26 @@ fn cli_parses_add_command_with_destination() {
 }
 
 #[test]
+fn cli_parses_add_magnet_command_with_destination() {
+    let cli = Cli::parse_from([
+        "styx-cli",
+        "add-magnet",
+        "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=exact%20uri",
+        "--destination",
+        "/tmp/downloads",
+    ]);
+
+    assert_eq!(
+        cli.command,
+        Some(Command::AddMagnet {
+            uri: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=exact%20uri"
+                .to_owned(),
+            destination: PathBuf::from("/tmp/downloads"),
+        })
+    );
+}
+
+#[test]
 fn cli_parses_ipc_status_command() {
     let cli = Cli::parse_from(["styx-cli", "--ipc", "/tmp/styx.sock", "status"]);
 

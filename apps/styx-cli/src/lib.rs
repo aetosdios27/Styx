@@ -183,6 +183,10 @@ fn control_command(command: &Command) -> Result<ControlCommand, CliError> {
             source: source.clone(),
             destination: destination.clone(),
         },
+        Command::AddMagnet { uri, destination } => ControlCommand::AddMagnet {
+            uri: uri.clone(),
+            destination: Some(destination.clone()),
+        },
         Command::Remove { info_hash } => ControlCommand::Remove {
             info_hash: InfoHashHex::from_str(info_hash)?,
         },
