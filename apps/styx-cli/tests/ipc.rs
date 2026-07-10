@@ -133,6 +133,52 @@ async fn ipc_server_rejects_oversized_frame_and_keeps_running() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn ipc_server_rejects_unterminated_frame_and_keeps_running() {
+    let root = unique_temp_dir("styx-cli-ipc-unterminated");
+    let socket = root.join("styx.sock");
+    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+        .await
+        .unwrap();
+    let server_socket = socket.clone();
+    let server_daemon = daemon.clone();
+    let server =
+        tokio::spawn(async move { serve_daemon_socket(&server_socket, server_daemon).await });
+    wait_for_socket(&socket).await;
+
+    let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    stream.write_all(br#"{"type":"status"}"#).await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let status = send_unix_command(&socket, &ControlCommand::Status)
+        .await
+        .unwrap();
+
+    server.abort();
+    daemon.shutdown().await.unwrap();
+    assert!(response.is_empty());
+    assert!(status.ok);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ipc_server_refuses_to_replace_hostile_existing_file() {
+    let root = unique_temp_dir("styx-cli-ipc-hostile-path");
+    let socket = root.join("styx.sock");
+    std::fs::write(&socket, b"do-not-delete").unwrap();
+    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+        .await
+        .unwrap();
+
+    let result = serve_daemon_socket(&socket, daemon.clone()).await;
+
+    daemon.shutdown().await.unwrap();
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&socket).unwrap(), b"do-not-delete");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn ipc_socket_and_parent_are_owner_only() {
     use std::os::unix::fs::PermissionsExt;
 

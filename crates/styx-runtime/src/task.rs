@@ -1,12 +1,15 @@
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
-use rand::RngCore;
-use styx_core::{BlockRequest, PeerAction, PeerConnectionManager, PeerKey, TorrentState};
+use styx_core::{
+    BlockRequest, PeerAction, PeerConnectionManager, PeerIdentityManager, PeerKey, PrivacyConfig,
+    TorrentState,
+};
 use styx_disk::{
     block_specs_for_piece, BlockSpec, PieceCompletion, PieceIndex, PieceManager, ResumeSummary,
     VerificationResult,
@@ -256,6 +259,7 @@ impl TorrentTask {
             };
 
         if should_announce {
+            self.rotate_peer_identity();
             let request = crate::tracker::build_plan_announce_request(
                 &self.plan,
                 self.peer_id,
@@ -296,6 +300,7 @@ impl TorrentTask {
 
             let info_hash = self.plan.info_hash;
             let connect_timeout = Duration::from_secs(10);
+            self.rotate_peer_identity();
 
             match self
                 .peers
@@ -612,6 +617,11 @@ impl TorrentTask {
         );
     }
 
+    fn rotate_peer_identity(&mut self) -> PeerId {
+        self.peer_id = fresh_peer_id();
+        self.peer_id
+    }
+
     fn handle_pex_wire_message(&mut self, peer: PeerKey, message: &PeerMessage) -> bool {
         if !DiscoveryPolicy::from_metainfo(&self.plan.metainfo).pex_allowed() {
             return matches!(message, PeerMessage::Extended { .. });
@@ -906,12 +916,19 @@ fn is_public_pex_endpoint(endpoint: SocketAddr) -> bool {
 }
 
 fn fresh_peer_id() -> PeerId {
-    let mut bytes = [0; 20];
-    let mut rng = rand::rng();
-    while bytes == [0; 20] {
-        rng.fill_bytes(&mut bytes);
-    }
-    PeerId::new(bytes)
+    static IDENTITIES: OnceLock<Mutex<PeerIdentityManager>> = OnceLock::new();
+    IDENTITIES
+        .get_or_init(|| {
+            Mutex::new(
+                PeerIdentityManager::new(PrivacyConfig::default())
+                    .expect("default privacy configuration is valid"),
+            )
+        })
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .generate(&mut rand::rng())
+        .expect("cryptographic peer identity generation should not exhaust")
+        .peer_id
 }
 
 fn is_legal_transition(from: TorrentStatus, to: TorrentStatus) -> bool {
@@ -1065,6 +1082,18 @@ mod tests {
         assert_ne!(first.peer_id, PeerId::new([0; 20]));
         assert_ne!(second.peer_id, PeerId::new([0; 20]));
         assert_ne!(first.peer_id, second.peer_id);
+    }
+
+    #[test]
+    fn announce_and_reconnect_rotations_never_reuse_peer_identity() {
+        let mut task = TorrentTask::new(make_v1_plan());
+        let mut identities = std::collections::HashSet::from([task.peer_id]);
+
+        for _ in 0..128 {
+            let identity = task.rotate_peer_identity();
+            assert_ne!(identity, PeerId::new([0; 20]));
+            assert!(identities.insert(identity));
+        }
     }
 
     #[tokio::test]

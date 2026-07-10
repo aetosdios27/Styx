@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 
 use bytes::Bytes;
-use styx_core::{PeerIdentityManager, PrivacyConfig};
 use styx_disk::{BlockSpec, PieceIndex, ResumeSummary};
 
 use crate::{
@@ -16,7 +15,6 @@ pub struct RuntimeEngine {
     config: RuntimeConfig,
     tasks: BTreeMap<TorrentId, TorrentTask>,
     events: VecDeque<RuntimeEvent>,
-    identities: PeerIdentityManager,
     pub block_corruption: BlockCorruptionTracker,
 }
 
@@ -26,9 +24,6 @@ impl RuntimeEngine {
             config: config.validate()?,
             tasks: BTreeMap::new(),
             events: VecDeque::new(),
-            identities: PeerIdentityManager::new(PrivacyConfig::default()).map_err(|_| {
-                RuntimeError::InvalidConfig("default privacy configuration must be valid")
-            })?,
             block_corruption: BlockCorruptionTracker::new(3),
         })
     }
@@ -347,11 +342,7 @@ impl RuntimeEngine {
     }
 
     fn task_with_fresh_identity(&mut self, plan: TorrentPlan) -> Result<TorrentTask, RuntimeError> {
-        let identity = self
-            .identities
-            .generate(&mut rand::rng())
-            .map_err(|_| RuntimeError::InvalidConfig("peer identity generation exhausted"))?;
-        TorrentTask::new_with_peers_and_peer_id(plan, self.config.clone(), identity.peer_id)
+        TorrentTask::new_with_peers(plan, self.config.clone())
     }
 
     pub fn push_event(&mut self, event: RuntimeEvent) {

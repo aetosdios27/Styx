@@ -16,4 +16,6 @@ pub enum CliError {
     UnsupportedMemoryCommand,
     #[error("IPC frame exceeds the {max} byte limit")]
     IpcFrameTooLarge { max: usize },
+    #[error("IPC frame must end with a newline")]
+    UnterminatedIpcFrame,
 }

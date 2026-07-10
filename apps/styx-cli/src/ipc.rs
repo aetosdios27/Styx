@@ -73,9 +73,52 @@ impl DaemonResponseEnvelope {
 }
 
 fn encode_line(value: &impl serde::Serialize) -> Result<Vec<u8>, CliError> {
-    let mut bytes = serde_json::to_vec(value)?;
+    let mut writer = LimitedFrameWriter::new(MAX_IPC_FRAME_BYTES - 1);
+    let result = serde_json::to_writer(&mut writer, value);
+    if writer.exceeded {
+        return Err(CliError::IpcFrameTooLarge {
+            max: MAX_IPC_FRAME_BYTES,
+        });
+    }
+    result?;
+    let mut bytes = writer.bytes;
     bytes.push(b'\n');
     Ok(bytes)
+}
+
+struct LimitedFrameWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl LimitedFrameWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit.min(4096)),
+            limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl std::io::Write for LimitedFrameWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.limit.saturating_sub(self.bytes.len());
+        if buffer.len() > remaining {
+            self.exceeded = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                "IPC frame limit exceeded",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn decode_exact<T>(bytes: &[u8]) -> Result<T, CliError>
@@ -264,6 +307,9 @@ where
         return Err(CliError::IpcFrameTooLarge {
             max: MAX_IPC_FRAME_BYTES,
         });
+    }
+    if !frame.ends_with(b"\n") {
+        return Err(CliError::UnterminatedIpcFrame);
     }
     Ok(frame)
 }
