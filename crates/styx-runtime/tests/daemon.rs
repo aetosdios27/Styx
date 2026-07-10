@@ -28,6 +28,19 @@ async fn daemon_start_loads_empty_state_and_reports_status() {
 }
 
 #[tokio::test]
+async fn empty_daemon_shutdown_completes_with_best_effort_lsd_configured() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = daemon_config(root.path());
+    config.runtime_config.dht.enabled = false;
+    let daemon = DaemonRuntime::start(config).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), daemon.shutdown())
+        .await
+        .expect("daemon shutdown exceeded its external deadline")
+        .unwrap();
+}
+
+#[tokio::test]
 async fn daemon_apply_add_persists_and_status_returns_torrent() {
     let temp = tempfile::tempdir().unwrap();
     let torrent = temp.path().join("sample.torrent");
