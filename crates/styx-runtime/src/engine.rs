@@ -193,6 +193,19 @@ impl RuntimeEngine {
         Ok(added)
     }
 
+    #[must_use]
+    pub fn dht_announce_targets(&self) -> Vec<(TorrentId, styx_dht::InfoHash)> {
+        self.tasks
+            .iter()
+            .filter_map(|(id, task)| task.dht_announce_target().map(|hash| (*id, hash)))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn dht_announce_target(&self, id: TorrentId) -> Option<styx_dht::InfoHash> {
+        self.tasks.get(&id)?.dht_announce_target()
+    }
+
     pub async fn resume_verify(&mut self, id: TorrentId) -> Result<ResumeSummary, RuntimeError> {
         let task = self
             .tasks

@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use styx_app::{
@@ -23,6 +24,7 @@ use crate::{
 
 const DEFAULT_SPEED_SAMPLES: usize = 60;
 const MAX_LOG_LINES: usize = 1000;
+const DHT_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug)]
 pub struct AppRuntime {
@@ -40,6 +42,8 @@ pub struct AppRuntime {
     dht_worker: Option<crate::DhtWorkerHandle>,
     dht_events: Option<mpsc::UnboundedReceiver<crate::DhtRuntimeEvent>>,
     dht_bootstrapped: bool,
+    dht_announce_ready: HashSet<TorrentId>,
+    dht_last_announce: HashMap<TorrentId, Instant>,
 }
 
 #[derive(Debug)]
@@ -66,6 +70,8 @@ impl AppRuntime {
             dht_worker: None,
             dht_events: None,
             dht_bootstrapped: false,
+            dht_announce_ready: HashSet::new(),
+            dht_last_announce: HashMap::new(),
         }
     }
 
@@ -180,21 +186,58 @@ impl AppRuntime {
     }
 
     fn request_dht_peers(&self, id: TorrentId, add: &MagnetAdd) -> Result<(), RuntimeError> {
+        let magnet = styx_proto::parse_magnet_uri(&add.uri)
+            .map_err(|err| RuntimeError::Magnet(err.to_string()))?;
+        let info_hash = magnet
+            .info_hash_v1
+            .ok_or_else(|| RuntimeError::Magnet("v1 info hash required for DHT lookup".into()))?;
+        self.request_dht_lookup(id, styx_dht::InfoHash::new(*info_hash.as_bytes()))
+    }
+
+    fn request_dht_lookup(
+        &self,
+        id: TorrentId,
+        info_hash: styx_dht::InfoHash,
+    ) -> Result<(), RuntimeError> {
         let Some(worker) = &self.dht_worker else {
             return Ok(());
         };
         if !self.dht_bootstrapped {
             return Ok(());
         }
-        let magnet = styx_proto::parse_magnet_uri(&add.uri)
-            .map_err(|err| RuntimeError::Magnet(err.to_string()))?;
-        let info_hash = magnet
-            .info_hash_v1
-            .ok_or_else(|| RuntimeError::Magnet("v1 info hash required for DHT lookup".into()))?;
         worker.send(crate::DhtCommand::GetPeers {
             torrent: id,
-            info_hash: styx_dht::InfoHash::new(*info_hash.as_bytes()),
+            info_hash,
         })
+    }
+
+    fn announce_dht_if_ready(&mut self, id: TorrentId) {
+        if !self.dht_announce_ready.contains(&id)
+            || self.engine.config().listen_port == 0
+            || self
+                .dht_last_announce
+                .get(&id)
+                .is_some_and(|last| last.elapsed() < DHT_ANNOUNCE_INTERVAL)
+        {
+            return;
+        }
+        let Some(info_hash) = self.engine.dht_announce_target(id) else {
+            return;
+        };
+        let Some(worker) = &self.dht_worker else {
+            return;
+        };
+        if worker
+            .send(crate::DhtCommand::AnnouncePeer {
+                torrent: id,
+                info_hash,
+                port: self.engine.config().listen_port,
+                implied_port: false,
+            })
+            .is_ok()
+        {
+            self.dht_last_announce.insert(id, Instant::now());
+        }
     }
 
     fn apply_add(
@@ -237,6 +280,10 @@ impl AppRuntime {
         self.engine
             .apply(RuntimeCommand::Torrent(id, TorrentCommand::Start))
             .map_err(map_runtime_error)?;
+        if let Some(info_hash) = self.engine.dht_announce_target(id) {
+            self.request_dht_lookup(id, info_hash)
+                .map_err(map_runtime_error)?;
+        }
         Ok(CommandResponse::TorrentAdded { info_hash, name })
     }
 
@@ -463,8 +510,12 @@ impl TorrentRuntime for AppRuntime {
                     for (id, add) in self.pending_magnets.clone() {
                         let _ = self.request_dht_peers(id, &add);
                     }
+                    for (id, info_hash) in self.engine.dht_announce_targets() {
+                        let _ = self.request_dht_lookup(id, info_hash);
+                    }
                 }
                 crate::DhtRuntimeEvent::PeersDiscovered { torrent, peers } => {
+                    self.dht_announce_ready.insert(torrent);
                     if let Some(add) = self.pending_magnets.get(&torrent).cloned() {
                         self.pending_download_peers.insert(torrent, peers.clone());
                         if let Some(handle) = spawn_bg_magnet_resolution(
@@ -476,19 +527,34 @@ impl TorrentRuntime for AppRuntime {
                         ) {
                             self.bg_handles.insert(torrent, handle);
                         }
+                    } else {
+                        let _ = self.engine.add_dht_peers(torrent, peers);
+                        self.announce_dht_if_ready(torrent);
                     }
                 }
                 crate::DhtRuntimeEvent::LookupExhausted { torrent } => {
-                    if let Some(record) = self.persistent_torrents.get_mut(&torrent) {
-                        record.state = PersistentTorrentState::Failed;
+                    self.dht_announce_ready.insert(torrent);
+                    if self.pending_magnets.contains_key(&torrent) {
+                        if let Some(record) = self.persistent_torrents.get_mut(&torrent) {
+                            record.state = PersistentTorrentState::Failed;
+                        }
+                        self.engine.push_event(RuntimeEvent::TaskFailed {
+                            torrent,
+                            reason: "DHT peer lookup exhausted".to_owned(),
+                        });
+                    } else {
+                        self.announce_dht_if_ready(torrent);
                     }
-                    self.engine.push_event(RuntimeEvent::TaskFailed {
-                        torrent,
-                        reason: "DHT peer lookup exhausted".to_owned(),
-                    });
+                }
+                crate::DhtRuntimeEvent::Announced { torrent, nodes } => {
+                    self.engine
+                        .push_event(RuntimeEvent::DhtAnnounced { torrent, nodes });
                 }
                 _ => {}
             }
+        }
+        for (id, _) in self.engine.dht_announce_targets() {
+            self.announce_dht_if_ready(id);
         }
         // 1. Process background download events
         while let Ok(bg) = self.bg_rx.try_recv() {
@@ -546,6 +612,7 @@ impl TorrentRuntime for AppRuntime {
                 BgEvent::MagnetMetadataResolved { id, plan, peers } => {
                     self.bg_handles.remove(&id);
                     self.pending_magnets.remove(&id);
+                    let peers = if plan.is_private() { Vec::new() } else { peers };
                     self.pending_download_peers.insert(id, peers);
                     let plan = *plan;
                     if let Err(err) = self
@@ -569,6 +636,7 @@ impl TorrentRuntime for AppRuntime {
                     if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
                         torrent.state = PersistentTorrentState::Downloading;
                     }
+                    self.announce_dht_if_ready(id);
                 }
                 BgEvent::MagnetResolutionFailed {
                     id,
@@ -751,6 +819,10 @@ fn map_to_log_line(event: &RuntimeEvent) -> Option<LogLine> {
         RuntimeEvent::DhtPeersDiscovered { torrent, peers } => Some(LogLine {
             level: LogLevel::Info,
             message: format!("DHT discovered {peers} peers for torrent {torrent:?}"),
+        }),
+        RuntimeEvent::DhtAnnounced { torrent, nodes } => Some(LogLine {
+            level: LogLevel::Info,
+            message: format!("announced torrent {torrent:?} to {nodes} DHT nodes"),
         }),
         RuntimeEvent::BlockUploaded {
             torrent,

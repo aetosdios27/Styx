@@ -227,6 +227,12 @@ async fn handle_command(
             port,
             implied_port,
         } => match runtime.start_announce_peer(info_hash, port, implied_port, Instant::now()) {
+            Ok(outbound) if outbound.is_empty() => {
+                let _ = events.send(DhtRuntimeEvent::Failed {
+                    reason: "DHT announce requires a token from a prior get_peers response"
+                        .to_owned(),
+                });
+            }
             Ok(outbound) => {
                 let nodes = send_outbound(socket, outbound, events).await;
                 let nodes = u32::try_from(nodes).unwrap_or(u32::MAX);

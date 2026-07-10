@@ -16,9 +16,9 @@ use styx_proto::{PeerId, PeerMessage};
 use styx_tracker::HttpTrackerClient;
 
 use crate::{
-    peer_table::PeerTable, RateCounter, RuntimeConfig, RuntimeError, RuntimeEvent, SourceEndpoint,
-    SourceFailure, SourceId, SourceTable, TorrentCommand, TorrentId, TorrentPlan, TorrentSnapshot,
-    TorrentStatus,
+    peer_table::PeerTable, DiscoveryPolicy, RateCounter, RuntimeConfig, RuntimeError, RuntimeEvent,
+    SourceEndpoint, SourceFailure, SourceId, SourceTable, TorrentCommand, TorrentId, TorrentPlan,
+    TorrentSnapshot, TorrentStatus,
 };
 
 #[derive(Debug)]
@@ -170,6 +170,16 @@ impl TorrentTask {
             }
         }
         added
+    }
+
+    #[must_use]
+    pub(crate) fn dht_announce_target(&self) -> Option<styx_dht::InfoHash> {
+        let active = matches!(
+            self.status,
+            TorrentStatus::Discovering | TorrentStatus::Downloading | TorrentStatus::Seeding
+        );
+        (active && DiscoveryPolicy::from_metainfo(&self.plan.metainfo).dht_allowed())
+            .then(|| styx_dht::InfoHash::new(*self.plan.info_hash.as_bytes()))
     }
 
     pub fn apply(&mut self, command: TorrentCommand) -> Result<Vec<RuntimeEvent>, RuntimeError> {

@@ -1,7 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use styx_dht::{DhtMessage, DhtQuery, DhtResponse, DhtSocket, InfoHash, NodeId};
+use bytes::Bytes;
+use styx_dht::{CompactPeer, DhtMessage, DhtQuery, DhtResponse, DhtSocket, InfoHash, NodeId};
 use styx_proto::InfoHashV1;
 use styx_runtime::{
     spawn_dht_worker, DhtCommand, DhtRuntimeConfig, DhtRuntimeEvent, RuntimeConfig, TorrentId,
@@ -27,7 +28,7 @@ async fn dht_worker_bootstrap_emits_bootstrapped_after_local_responder() {
         .unwrap();
 
     worker.send(DhtCommand::Bootstrap).unwrap();
-    respond_to_ping(remote, NodeId::new([9; 20])).await;
+    respond_to_ping(&remote, NodeId::new([9; 20])).await;
 
     let event = timeout(Duration::from_secs(1), events_rx.recv())
         .await
@@ -65,7 +66,7 @@ async fn dht_worker_reports_lookup_exhausted_after_timeout() {
     let torrent = TorrentId::new(InfoHashV1::new([42; 20]));
 
     worker.send(DhtCommand::Bootstrap).unwrap();
-    respond_to_ping(remote, NodeId::new([10; 20])).await;
+    respond_to_ping(&remote, NodeId::new([10; 20])).await;
     wait_for_bootstrap(&mut events_rx).await;
     worker
         .send(DhtCommand::GetPeers { torrent, info_hash })
@@ -80,6 +81,118 @@ async fn dht_worker_reports_lookup_exhausted_after_timeout() {
     worker.shutdown().await.unwrap();
 
     assert_eq!(event, DhtRuntimeEvent::LookupExhausted { torrent });
+}
+
+#[tokio::test]
+async fn dht_announce_uses_prior_token_and_configured_port() {
+    let remote = DhtSocket::bind(localhost_ephemeral()).await.unwrap();
+    let remote_addr = remote.local_addr().unwrap();
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let worker = spawn_dht_worker(test_dht_config(remote_addr), events_tx)
+        .await
+        .unwrap();
+    let info_hash = InfoHash::new([51; 20]);
+    let torrent = TorrentId::new(InfoHashV1::new([51; 20]));
+
+    worker.send(DhtCommand::Bootstrap).unwrap();
+    respond_to_ping(&remote, NodeId::new([11; 20])).await;
+    wait_for_bootstrap(&mut events_rx).await;
+    worker
+        .send(DhtCommand::GetPeers { torrent, info_hash })
+        .unwrap();
+
+    let get_peers = remote.poll_once().await.unwrap();
+    let DhtMessage::Query {
+        transaction_id,
+        query: DhtQuery::GetPeers { .. },
+    } = get_peers.message
+    else {
+        panic!("expected get_peers query");
+    };
+    remote
+        .send_to(
+            &DhtMessage::Response {
+                transaction_id,
+                response: DhtResponse::GetPeers {
+                    id: NodeId::new([11; 20]),
+                    token: Bytes::from_static(b"announce-token"),
+                    values: vec![CompactPeer::new("127.0.0.1:7000".parse().unwrap())],
+                    nodes: Vec::new(),
+                    nodes6: Vec::new(),
+                    external_ip: None,
+                },
+            },
+            get_peers.source,
+        )
+        .await
+        .unwrap();
+    loop {
+        if matches!(
+            events_rx.recv().await,
+            Some(DhtRuntimeEvent::PeersDiscovered { .. })
+        ) {
+            break;
+        }
+    }
+
+    worker
+        .send(DhtCommand::AnnouncePeer {
+            torrent,
+            info_hash,
+            port: 6881,
+            implied_port: false,
+        })
+        .unwrap();
+    let announce = remote.poll_once().await.unwrap();
+    let DhtMessage::Query {
+        query:
+            DhtQuery::AnnouncePeer {
+                port,
+                implied_port,
+                token,
+                ..
+            },
+        ..
+    } = announce.message
+    else {
+        panic!("expected announce_peer query");
+    };
+
+    worker.shutdown().await.unwrap();
+    assert_eq!(port, 6881);
+    assert!(!implied_port);
+    assert_eq!(token, Bytes::from_static(b"announce-token"));
+}
+
+#[tokio::test]
+async fn dht_announce_does_not_run_without_token() {
+    let remote = DhtSocket::bind(localhost_ephemeral()).await.unwrap();
+    let remote_addr = remote.local_addr().unwrap();
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let worker = spawn_dht_worker(test_dht_config(remote_addr), events_tx)
+        .await
+        .unwrap();
+    let info_hash = InfoHash::new([52; 20]);
+    let torrent = TorrentId::new(InfoHashV1::new([52; 20]));
+
+    worker.send(DhtCommand::Bootstrap).unwrap();
+    respond_to_ping(&remote, NodeId::new([12; 20])).await;
+    wait_for_bootstrap(&mut events_rx).await;
+    worker
+        .send(DhtCommand::AnnouncePeer {
+            torrent,
+            info_hash,
+            port: 6881,
+            implied_port: false,
+        })
+        .unwrap();
+
+    let event = timeout(Duration::from_secs(1), events_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.shutdown().await.unwrap();
+    assert!(matches!(event, DhtRuntimeEvent::Failed { .. }));
 }
 
 fn localhost_ephemeral() -> SocketAddr {
@@ -98,7 +211,7 @@ fn test_dht_config(remote_addr: SocketAddr) -> DhtRuntimeConfig {
     }
 }
 
-async fn respond_to_ping(socket: DhtSocket, id: NodeId) {
+async fn respond_to_ping(socket: &DhtSocket, id: NodeId) {
     let event = socket.poll_once().await.unwrap();
     let DhtMessage::Query {
         transaction_id,

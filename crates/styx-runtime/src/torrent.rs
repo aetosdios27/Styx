@@ -101,6 +101,11 @@ impl TorrentPlan {
     pub fn piece_length(&self, piece: PieceIndex) -> Result<u32, RuntimeError> {
         Ok(self.disk_plan.piece_length(piece)?)
     }
+
+    #[must_use]
+    pub const fn is_private(&self) -> bool {
+        self.metainfo.info.private
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
