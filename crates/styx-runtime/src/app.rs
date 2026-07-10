@@ -26,6 +26,12 @@ const DEFAULT_SPEED_SAMPLES: usize = 60;
 const MAX_LOG_LINES: usize = 1000;
 const DHT_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LsdWorkerState {
+    Retain,
+    Detach,
+}
+
 #[derive(Debug)]
 pub struct AppRuntime {
     engine: RuntimeEngine,
@@ -44,7 +50,7 @@ pub struct AppRuntime {
     dht_bootstrapped: bool,
     dht_announce_ready: HashSet<TorrentId>,
     dht_last_announce: HashMap<TorrentId, Instant>,
-    lsd_worker: Option<crate::LsdWorkerHandle>,
+    lsd_worker: Option<crate::LsdClient>,
     lsd_events: Option<mpsc::UnboundedReceiver<crate::LsdRuntimeEvent>>,
     lsd_targets: Vec<(TorrentId, styx_proto::InfoHashV1)>,
 }
@@ -193,11 +199,25 @@ impl AppRuntime {
 
     pub fn attach_lsd_worker(
         &mut self,
-        worker: crate::LsdWorkerHandle,
+        worker: crate::LsdClient,
         events: mpsc::UnboundedReceiver<crate::LsdRuntimeEvent>,
-    ) {
+    ) -> Result<(), RuntimeError> {
+        let targets = self.engine.lsd_announce_targets();
+        worker
+            .try_send(crate::LsdCommand::Update {
+                torrents: targets.clone(),
+            })
+            .map_err(|error| match error {
+                crate::LsdError::CommandBackpressure => RuntimeError::Backpressure {
+                    stage: "lsd_command",
+                },
+                crate::LsdError::WorkerClosed => RuntimeError::Cancelled,
+                _ => unreachable!("LSD command delivery has only channel errors"),
+            })?;
         self.lsd_worker = Some(worker);
         self.lsd_events = Some(events);
+        self.lsd_targets = targets;
+        Ok(())
     }
 
     fn request_dht_peers(&self, id: TorrentId, add: &MagnetAdd) -> Result<(), RuntimeError> {
@@ -580,11 +600,17 @@ impl TorrentRuntime for AppRuntime {
         }
         let lsd_targets = self.engine.lsd_announce_targets();
         if lsd_targets != self.lsd_targets {
-            self.lsd_targets = lsd_targets.clone();
-            if let Some(worker) = &self.lsd_worker {
-                let _ = worker.send(crate::LsdCommand::Update {
-                    torrents: lsd_targets,
-                });
+            if let Some(delivery) = self.lsd_worker.as_ref().map(|worker| {
+                worker.try_send(crate::LsdCommand::Update {
+                    torrents: lsd_targets.clone(),
+                })
+            }) {
+                if reconcile_lsd_delivery(&mut self.lsd_targets, lsd_targets, delivery)
+                    == LsdWorkerState::Detach
+                {
+                    self.lsd_worker = None;
+                    self.lsd_events = None;
+                }
             }
         }
         // 1. Process background download events
@@ -763,6 +789,22 @@ impl TorrentRuntime for AppRuntime {
     }
 }
 
+fn reconcile_lsd_delivery(
+    acknowledged: &mut Vec<(TorrentId, styx_proto::InfoHashV1)>,
+    desired: Vec<(TorrentId, styx_proto::InfoHashV1)>,
+    delivery: Result<(), crate::LsdError>,
+) -> LsdWorkerState {
+    match delivery {
+        Ok(()) => {
+            *acknowledged = desired;
+            LsdWorkerState::Retain
+        }
+        Err(crate::LsdError::CommandBackpressure) => LsdWorkerState::Retain,
+        Err(crate::LsdError::WorkerClosed) => LsdWorkerState::Detach,
+        Err(_) => unreachable!("LSD command delivery has only channel errors"),
+    }
+}
+
 fn torrent_id_from_hex(hex: InfoHashHex) -> Result<TorrentId, AppError> {
     use styx_proto::InfoHashV1;
     let bytes = *hex.as_bytes();
@@ -895,5 +937,73 @@ fn torrent_snapshot_to_row(snap: &TorrentSnapshot) -> TorrentRow {
         up_rate: snap.up_rate,
         peers: snap.peers,
         seeds: snap.seeds,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lsd_target(byte: u8) -> (TorrentId, styx_proto::InfoHashV1) {
+        let hash = styx_proto::InfoHashV1::new([byte; 20]);
+        (TorrentId::new(hash), hash)
+    }
+
+    #[test]
+    fn lsd_backpressure_keeps_stale_acknowledgement_for_retry() {
+        let stale_public_target = lsd_target(1);
+        let mut acknowledged = vec![stale_public_target];
+
+        let state = reconcile_lsd_delivery(
+            &mut acknowledged,
+            Vec::new(),
+            Err(crate::LsdError::CommandBackpressure),
+        );
+
+        assert_eq!(state, LsdWorkerState::Retain);
+        assert_eq!(acknowledged, vec![stale_public_target]);
+    }
+
+    #[test]
+    fn lsd_success_advances_acknowledged_targets() {
+        let desired = vec![lsd_target(2)];
+        let mut acknowledged = vec![lsd_target(1)];
+
+        let state = reconcile_lsd_delivery(&mut acknowledged, desired.clone(), Ok(()));
+
+        assert_eq!(state, LsdWorkerState::Retain);
+        assert_eq!(acknowledged, desired);
+    }
+
+    #[test]
+    fn lsd_worker_closure_requires_detach_without_acknowledging_targets() {
+        let previous = vec![lsd_target(1)];
+        let mut acknowledged = previous.clone();
+
+        let state = reconcile_lsd_delivery(
+            &mut acknowledged,
+            vec![lsd_target(2)],
+            Err(crate::LsdError::WorkerClosed),
+        );
+
+        assert_eq!(state, LsdWorkerState::Detach);
+        assert_eq!(acknowledged, previous);
+    }
+
+    #[test]
+    fn attaching_replacement_lsd_worker_synchronizes_its_own_generation() {
+        let mut runtime = AppRuntime::new_with_config(RuntimeConfig::default()).unwrap();
+        runtime.lsd_targets = vec![lsd_target(1)];
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let client = crate::LsdClient::from_sender(command_tx);
+        let (_events_tx, events_rx) = mpsc::unbounded_channel();
+
+        runtime.attach_lsd_worker(client, events_rx).unwrap();
+
+        assert!(runtime.lsd_targets.is_empty());
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(crate::LsdCommand::Update { torrents }) if torrents.is_empty()
+        ));
     }
 }

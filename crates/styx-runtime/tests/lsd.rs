@@ -1,7 +1,17 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use styx_proto::InfoHashV1;
-use styx_runtime::{decode_lsd_announce, encode_lsd_announce, LsdAnnounce};
+use styx_runtime::{decode_lsd_announce, encode_lsd_announce, LsdAnnounce, LsdError, LsdOwner};
+
+#[test]
+fn lsd_owner_is_not_cloneable() {
+    static_assertions::assert_not_impl_any!(LsdOwner: Clone);
+}
+
+#[test]
+fn lsd_command_failures_are_typed_for_backpressure_and_closure() {
+    assert_ne!(LsdError::CommandBackpressure, LsdError::WorkerClosed);
+}
 
 #[test]
 fn lsd_announce_encodes_single_info_hash() {

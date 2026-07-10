@@ -44,9 +44,9 @@ pub use engine::RuntimeEngine;
 pub use error::{FailureScope, RetryClass, RuntimeError};
 pub use intent::{IntentState, RollbackRecord, StageIntent};
 pub use lsd::{
-    decode_lsd_announce, encode_lsd_announce, spawn_lsd_worker, LsdAnnounce, LsdCommand,
-    LsdDiscovery, LsdError, LsdRuntimeEvent, LsdWorkerHandle, LSD_IPV4_MULTICAST,
-    LSD_IPV6_MULTICAST, MAX_LSD_PACKET_BYTES,
+    decode_lsd_announce, encode_lsd_announce, spawn_lsd_worker, LsdAnnounce, LsdClient, LsdCommand,
+    LsdDiscovery, LsdError, LsdOwner, LsdRuntimeEvent, LSD_IPV4_MULTICAST, LSD_IPV6_MULTICAST,
+    MAX_LSD_PACKET_BYTES,
 };
 pub use magnet::{resolve_magnet_from_exact_peers, MagnetAdd, ResolvedMagnet};
 pub use metadata::{fetch_metadata_from_peer, fetch_metadata_from_stream, MetadataFetchConfig};
