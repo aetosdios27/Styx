@@ -185,14 +185,17 @@ async fn app_runtime_add_magnet_resolves_metadata_from_exact_peer() {
 }
 
 #[tokio::test]
-async fn app_runtime_add_magnet_resolves_metadata_from_dht_peer_without_tracker() {
-    let metadata = torrent_bytes_for_piece(b"abcdefgh");
+async fn magnet_without_trackers_resolves_metadata_through_local_dht_and_downloads_piece() {
+    let piece = Bytes::from_static(b"abcdefgh");
+    let metadata = torrent_bytes_for_piece(&piece);
     let info_hash = info_hash_from_torrent_bytes(&metadata);
     let metadata_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let metadata_addr = metadata_listener.local_addr().unwrap();
     let metadata_server = tokio::spawn(async move {
         let (mut stream, _) = metadata_listener.accept().await.unwrap();
         serve_metadata_peer(&mut stream, info_hash, Bytes::from(metadata), 9).await;
+        let (mut stream, _) = metadata_listener.accept().await.unwrap();
+        serve_piece_peer(&mut stream, info_hash, piece).await;
     });
     let dht = DhtSocket::bind("127.0.0.1:0".parse().unwrap())
         .await
@@ -264,9 +267,14 @@ async fn app_runtime_add_magnet_resolves_metadata_from_dht_peer_without_tracker(
         })
         .unwrap();
 
-    for _ in 0..100 {
+    for _ in 0..300 {
         runtime.tick();
-        if runtime.snapshot().totals.torrent_count == 1 {
+        if runtime
+            .snapshot()
+            .torrents
+            .first()
+            .is_some_and(|torrent| torrent.progress == 1.0)
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -275,7 +283,9 @@ async fn app_runtime_add_magnet_resolves_metadata_from_dht_peer_without_tracker(
     worker.shutdown().await.unwrap();
     dht_server.await.unwrap();
     metadata_server.await.unwrap();
-    assert_eq!(runtime.snapshot().totals.torrent_count, 1);
+    let snapshot = runtime.snapshot();
+    assert_eq!(snapshot.totals.torrent_count, 1);
+    assert_eq!(snapshot.torrents[0].progress, 1.0);
 }
 
 #[tokio::test]
@@ -416,6 +426,53 @@ async fn serve_metadata_peer(
         )
         .await
         .unwrap();
+    }
+}
+
+async fn serve_piece_peer(stream: &mut TcpStream, info_hash: InfoHashV1, piece: Bytes) {
+    read_handshake(stream, info_hash).await.unwrap();
+    write_handshake(
+        stream,
+        &Handshake {
+            reserved: ExtensionBits::default(),
+            info_hash,
+            peer_id: PeerId::new([3; 20]),
+        },
+    )
+    .await
+    .unwrap();
+    write_message(
+        stream,
+        &PeerMessage::Bitfield {
+            bytes: Bytes::from_static(&[0x80]),
+        },
+    )
+    .await
+    .unwrap();
+    write_message(stream, &PeerMessage::Unchoke).await.unwrap();
+    loop {
+        match read_message(stream, DEFAULT_MAX_PEER_FRAME_LEN).await {
+            Ok(PeerMessage::Request {
+                index,
+                begin,
+                length,
+            }) => {
+                assert_eq!((index, begin, length), (0, 0, piece.len() as u32));
+                write_message(
+                    stream,
+                    &PeerMessage::Piece {
+                        index,
+                        begin,
+                        block: piece,
+                    },
+                )
+                .await
+                .unwrap();
+                break;
+            }
+            Ok(_) => {}
+            Err(error) => panic!("piece peer failed before request: {error}"),
+        }
     }
 }
 

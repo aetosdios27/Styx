@@ -99,7 +99,7 @@ fn persistent_state_v1_file_torrents_migrate_to_v2_source_enum() {
 }
 
 #[tokio::test]
-async fn persistent_state_round_trips_pending_magnet_without_peer_or_node_identity() {
+async fn magnet_restart_preserves_pending_resolution_without_persisting_node_id() {
     let temp = tempfile::tempdir().unwrap();
     let store = PersistentStore::open(temp.path().join("state")).unwrap();
     let mut runtime = PersistentAppRuntime::open(RuntimeConfig::default(), store.clone())
@@ -122,6 +122,15 @@ async fn persistent_state_round_trips_pending_magnet_without_peer_or_node_identi
     );
     assert!(!encoded.contains("peer"));
     assert!(!encoded.contains("node_id"));
+
+    drop(runtime);
+    let mut reopened = PersistentAppRuntime::open(RuntimeConfig::default(), store)
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.runtime_mut().persistent_state().torrents[0].source,
+        PersistentTorrentSource::Magnet { uri: uri.into() }
+    );
 }
 
 #[tokio::test]
