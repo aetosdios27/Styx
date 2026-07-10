@@ -5,6 +5,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use rand::RngCore;
 use styx_core::{BlockRequest, PeerAction, PeerConnectionManager, TorrentState};
 use styx_disk::{
     block_specs_for_piece, BlockSpec, PieceCompletion, PieceIndex, PieceManager, ResumeSummary,
@@ -75,7 +76,7 @@ impl TorrentTask {
             manager,
             peers,
             sources,
-            peer_id: PeerId::new([0u8; 20]),
+            peer_id: fresh_peer_id(),
             last_announce: None,
             announce_interval: Duration::from_secs(1800),
             tracker: HttpTrackerClient::new(512 * 1024),
@@ -87,6 +88,14 @@ impl TorrentTask {
     }
 
     pub fn new_with_peers(plan: TorrentPlan, config: RuntimeConfig) -> Result<Self, RuntimeError> {
+        Self::new_with_peers_and_peer_id(plan, config, fresh_peer_id())
+    }
+
+    pub(crate) fn new_with_peers_and_peer_id(
+        plan: TorrentPlan,
+        config: RuntimeConfig,
+        peer_id: PeerId,
+    ) -> Result<Self, RuntimeError> {
         let pieces = PieceManager::new(plan.disk_plan.clone());
 
         let piece_count = plan.piece_count() as usize;
@@ -109,8 +118,6 @@ impl TorrentTask {
         let sources = SourceTable::from_candidates(web_seed_candidates, &config)?;
 
         let peers = PeerTable::new(config.limits.max_peers_per_torrent);
-        let peer_id = PeerId::new([0u8; 20]);
-
         Ok(Self {
             plan,
             pieces,
@@ -759,6 +766,15 @@ impl TorrentTask {
     }
 }
 
+fn fresh_peer_id() -> PeerId {
+    let mut bytes = [0; 20];
+    let mut rng = rand::rng();
+    while bytes == [0; 20] {
+        rng.fill_bytes(&mut bytes);
+    }
+    PeerId::new(bytes)
+}
+
 fn is_legal_transition(from: TorrentStatus, to: TorrentStatus) -> bool {
     matches!(
         (from, to),
@@ -900,6 +916,16 @@ mod tests {
         assert_eq!(task.status, TorrentStatus::Checking);
         assert_eq!(task.peers.connected_count(), 0);
         assert_eq!(task.sources.len(), 0);
+    }
+
+    #[test]
+    fn production_tasks_use_distinct_nonzero_peer_identities() {
+        let first = TorrentTask::new(make_v1_plan());
+        let second = TorrentTask::new(make_v1_plan());
+
+        assert_ne!(first.peer_id, PeerId::new([0; 20]));
+        assert_ne!(second.peer_id, PeerId::new([0; 20]));
+        assert_ne!(first.peer_id, second.peer_id);
     }
 
     #[tokio::test]

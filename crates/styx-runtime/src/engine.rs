@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 
 use bytes::Bytes;
+use styx_core::{PeerIdentityManager, PrivacyConfig};
 use styx_disk::{BlockSpec, PieceIndex, ResumeSummary};
 
 use crate::{
@@ -15,6 +16,7 @@ pub struct RuntimeEngine {
     config: RuntimeConfig,
     tasks: BTreeMap<TorrentId, TorrentTask>,
     events: VecDeque<RuntimeEvent>,
+    identities: PeerIdentityManager,
     pub block_corruption: BlockCorruptionTracker,
 }
 
@@ -24,6 +26,9 @@ impl RuntimeEngine {
             config: config.validate()?,
             tasks: BTreeMap::new(),
             events: VecDeque::new(),
+            identities: PeerIdentityManager::new(PrivacyConfig::default()).map_err(|_| {
+                RuntimeError::InvalidConfig("default privacy configuration must be valid")
+            })?,
             block_corruption: BlockCorruptionTracker::new(3),
         })
     }
@@ -206,8 +211,8 @@ impl RuntimeEngine {
             });
         }
         let id = plan.id;
-        self.tasks
-            .insert(id, TorrentTask::new_with_peers(plan, self.config.clone())?);
+        let task = self.task_with_fresh_identity(plan)?;
+        self.tasks.insert(id, task);
         Ok(vec![RuntimeEvent::TorrentAdded { torrent: id }])
     }
 
@@ -247,7 +252,7 @@ impl RuntimeEngine {
             }
             RollbackRecord::RemoveRollback { id, plan } => {
                 if !self.tasks.contains_key(&id) {
-                    let task = TorrentTask::new_with_peers(*plan, self.config.clone())?;
+                    let task = self.task_with_fresh_identity(*plan)?;
                     self.tasks.insert(id, task);
                 }
                 Ok(())
@@ -294,7 +299,7 @@ impl RuntimeEngine {
     ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         let (plan, mut events) = self.remove_torrent_intent(id)?;
         let total_size = plan.total_size;
-        let mut task = TorrentTask::new_with_peers(*plan, self.config.clone())?;
+        let mut task = self.task_with_fresh_identity(*plan)?;
         task.set_status_complete()?;
         if self.config.seed_policy.seed_after_complete {
             events.extend(task.start_seeding()?);
@@ -312,6 +317,14 @@ impl RuntimeEngine {
 
     pub fn record_block_failure(&mut self, piece: u32, block: u32, peer: SocketAddr) -> bool {
         self.block_corruption.record_failure(piece, block, peer)
+    }
+
+    fn task_with_fresh_identity(&mut self, plan: TorrentPlan) -> Result<TorrentTask, RuntimeError> {
+        let identity = self
+            .identities
+            .generate(&mut rand::rng())
+            .map_err(|_| RuntimeError::InvalidConfig("peer identity generation exhausted"))?;
+        TorrentTask::new_with_peers_and_peer_id(plan, self.config.clone(), identity.peer_id)
     }
 
     pub fn push_event(&mut self, event: RuntimeEvent) {
