@@ -61,12 +61,10 @@ impl DaemonRuntime {
             && !config.runtime_config.dht.bootstrap_nodes.is_empty()
         {
             let (events_tx, events_rx) = mpsc::unbounded_channel();
-            let worker =
+            let (client, owner) =
                 crate::spawn_dht_worker(config.runtime_config.dht.clone(), events_tx).await?;
-            runtime
-                .runtime_mut()
-                .attach_dht_worker(worker.clone(), events_rx)?;
-            Some(worker)
+            runtime.runtime_mut().attach_dht_worker(client, events_rx)?;
+            Some(owner)
         } else {
             None
         };
@@ -131,7 +129,7 @@ async fn run_daemon(
     config: DaemonConfig,
     mut runtime: PersistentAppRuntime,
     mut rx: mpsc::Receiver<DaemonRequest>,
-    dht_worker: Option<crate::DhtWorkerHandle>,
+    dht_worker: Option<crate::DhtOwner>,
     lsd_worker: Option<crate::LsdWorkerHandle>,
 ) {
     let started = Instant::now();

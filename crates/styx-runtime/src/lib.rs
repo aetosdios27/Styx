@@ -35,7 +35,9 @@ pub use app::{AppRuntime, PersistentAppRuntime};
 pub use config::{RuntimeConfig, RuntimeLimits, SeedPolicy, SessionRuntimeConfig};
 pub use control::{RuntimeCommand, TorrentCommand};
 pub use daemon::{DaemonConfig, DaemonHandle, DaemonRuntime, DaemonStatus};
-pub use dht::{spawn_dht_worker, DhtCommand, DhtRuntimeConfig, DhtRuntimeEvent, DhtWorkerHandle};
+pub use dht::{
+    spawn_dht_worker, DhtClient, DhtCommand, DhtOwner, DhtRuntimeConfig, DhtRuntimeEvent,
+};
 pub use discovery::DiscoveryPolicy;
 pub use download::run_full_v1_download;
 pub use engine::RuntimeEngine;

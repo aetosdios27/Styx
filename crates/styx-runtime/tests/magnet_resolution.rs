@@ -241,12 +241,13 @@ async fn magnet_without_trackers_resolves_metadata_through_local_dht_and_downloa
         bind: "127.0.0.1:0".parse().unwrap(),
         bootstrap_nodes: vec![dht_addr],
         query_timeout: Duration::from_secs(1),
+        command_capacity: 256,
         metadata_size_limit: 64 * 1024,
         metadata_request_limit: 8,
         tick_interval: Duration::from_millis(5),
     };
     let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
-    let worker = spawn_dht_worker(dht_config.clone(), events_tx)
+    let (client, owner) = spawn_dht_worker(dht_config.clone(), events_tx)
         .await
         .unwrap();
     let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
@@ -255,9 +256,7 @@ async fn magnet_without_trackers_resolves_metadata_through_local_dht_and_downloa
         ..RuntimeConfig::default()
     })
     .unwrap();
-    runtime
-        .attach_dht_worker(worker.clone(), events_rx)
-        .unwrap();
+    runtime.attach_dht_worker(client, events_rx).unwrap();
     let temp = tempfile::tempdir().unwrap();
 
     runtime
@@ -280,7 +279,7 @@ async fn magnet_without_trackers_resolves_metadata_through_local_dht_and_downloa
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    worker.shutdown().await.unwrap();
+    owner.shutdown().await.unwrap();
     dht_server.await.unwrap();
     metadata_server.await.unwrap();
     let snapshot = runtime.snapshot();
@@ -321,7 +320,7 @@ async fn magnet_resolution_times_out_without_hanging_runtime() {
         ..DhtRuntimeConfig::default()
     };
     let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
-    let worker = spawn_dht_worker(dht_config.clone(), events_tx)
+    let (client, owner) = spawn_dht_worker(dht_config.clone(), events_tx)
         .await
         .unwrap();
     let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
@@ -329,9 +328,7 @@ async fn magnet_resolution_times_out_without_hanging_runtime() {
         ..RuntimeConfig::default()
     })
     .unwrap();
-    runtime
-        .attach_dht_worker(worker.clone(), events_rx)
-        .unwrap();
+    runtime.attach_dht_worker(client, events_rx).unwrap();
     let temp = tempfile::tempdir().unwrap();
     runtime
         .apply(ControlCommand::AddMagnet {
@@ -350,7 +347,7 @@ async fn magnet_resolution_times_out_without_hanging_runtime() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
-    worker.shutdown().await.unwrap();
+    owner.shutdown().await.unwrap();
     assert_eq!(
         runtime.persistent_state().torrents[0].state,
         styx_runtime::PersistentTorrentState::Failed

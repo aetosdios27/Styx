@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -8,9 +7,10 @@ use styx_dht::{
     DhtConfig, DhtError, DhtEvent, DhtMessage, DhtRuntime, DhtSocket, InfoHash, NodeAddr, NodeId,
     TokenManager, TransactionKind,
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
-use crate::{RuntimeError, TorrentId};
+use crate::{OwnedTask, RuntimeError, TaskKind, TorrentId};
 
 const DEFAULT_METADATA_SIZE_LIMIT: u64 = 8 * 1024 * 1024;
 const DEFAULT_METADATA_REQUEST_LIMIT: u32 = 512;
@@ -22,6 +22,7 @@ pub struct DhtRuntimeConfig {
     pub bind: SocketAddr,
     pub bootstrap_nodes: Vec<SocketAddr>,
     pub query_timeout: Duration,
+    pub command_capacity: usize,
     pub metadata_size_limit: u64,
     pub metadata_request_limit: u32,
     pub tick_interval: Duration,
@@ -40,7 +41,6 @@ pub enum DhtCommand {
         port: u16,
         implied_port: bool,
     },
-    Shutdown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,9 +65,14 @@ pub enum DhtRuntimeEvent {
 }
 
 #[derive(Clone, Debug)]
-pub struct DhtWorkerHandle {
-    tx: mpsc::UnboundedSender<DhtCommand>,
-    join: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+pub struct DhtClient {
+    tx: mpsc::Sender<DhtCommand>,
+}
+
+#[derive(Debug)]
+pub struct DhtOwner {
+    shutdown: Option<oneshot::Sender<()>>,
+    join: Option<JoinHandle<()>>,
 }
 
 impl Default for DhtRuntimeConfig {
@@ -77,6 +82,7 @@ impl Default for DhtRuntimeConfig {
             bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 6881),
             bootstrap_nodes: Vec::new(),
             query_timeout: Duration::from_secs(15),
+            command_capacity: 256,
             metadata_size_limit: DEFAULT_METADATA_SIZE_LIMIT,
             metadata_request_limit: DEFAULT_METADATA_REQUEST_LIMIT,
             tick_interval: DEFAULT_DHT_TICK_INTERVAL,
@@ -94,6 +100,11 @@ impl DhtRuntimeConfig {
         if self.query_timeout.is_zero() {
             return Err(RuntimeError::InvalidConfig(
                 "dht query_timeout must be greater than zero",
+            ));
+        }
+        if self.command_capacity == 0 {
+            return Err(RuntimeError::InvalidConfig(
+                "dht command capacity must be greater than zero",
             ));
         }
         if self.metadata_size_limit == 0 {
@@ -115,24 +126,54 @@ impl DhtRuntimeConfig {
     }
 }
 
-impl DhtWorkerHandle {
-    pub fn send(&self, command: DhtCommand) -> Result<(), RuntimeError> {
-        self.tx.send(command).map_err(|_| RuntimeError::Cancelled)
+impl DhtClient {
+    pub fn try_send(&self, command: DhtCommand) -> Result<(), RuntimeError> {
+        self.tx.try_send(command).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => RuntimeError::Backpressure {
+                stage: "dht_command",
+            },
+            mpsc::error::TrySendError::Closed(_) => RuntimeError::Cancelled,
+        })
     }
+}
 
+impl DhtOwner {
     pub async fn shutdown(self) -> Result<(), RuntimeError> {
-        let _ = self.tx.send(DhtCommand::Shutdown);
-        if let Some(join) = self.join.lock().await.take() {
-            let _ = join.await;
+        let mut owner = self;
+        if let Some(shutdown) = owner.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(join) = owner.join.take() {
+            join.await.map_err(|_| RuntimeError::Cancelled)?;
         }
         Ok(())
+    }
+
+    pub fn into_task(mut self) -> OwnedTask {
+        let join = self
+            .join
+            .take()
+            .expect("DHT owner must contain exactly one worker task");
+        let shutdown = self
+            .shutdown
+            .take()
+            .expect("DHT owner must contain exactly one shutdown capability");
+        OwnedTask::with_shutdown(TaskKind::Dht, join, shutdown)
+    }
+}
+
+impl Drop for DhtOwner {
+    fn drop(&mut self) {
+        if let Some(join) = &self.join {
+            join.abort();
+        }
     }
 }
 
 pub async fn spawn_dht_worker(
     config: DhtRuntimeConfig,
     events: mpsc::UnboundedSender<DhtRuntimeEvent>,
-) -> Result<DhtWorkerHandle, RuntimeError> {
+) -> Result<(DhtClient, DhtOwner), RuntimeError> {
     config.validate()?;
     if !config.enabled {
         return Err(RuntimeError::InvalidConfig("dht worker is disabled"));
@@ -140,12 +181,23 @@ pub async fn spawn_dht_worker(
 
     let socket = DhtSocket::bind(config.bind).await?;
     let runtime = build_dht_runtime(&config)?;
-    let (tx, rx) = mpsc::unbounded_channel();
-    let join = tokio::spawn(run_dht_worker(socket, runtime, config, events, rx));
-    Ok(DhtWorkerHandle {
-        tx,
-        join: Arc::new(Mutex::new(Some(join))),
-    })
+    let (tx, rx) = mpsc::channel(config.command_capacity);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let join = tokio::spawn(run_dht_worker(
+        socket,
+        runtime,
+        config,
+        events,
+        rx,
+        shutdown_rx,
+    ));
+    Ok((
+        DhtClient { tx },
+        DhtOwner {
+            shutdown: Some(shutdown_tx),
+            join: Some(join),
+        },
+    ))
 }
 
 fn build_dht_runtime(config: &DhtRuntimeConfig) -> Result<DhtRuntime, DhtError> {
@@ -169,12 +221,16 @@ async fn run_dht_worker(
     mut runtime: DhtRuntime,
     config: DhtRuntimeConfig,
     events: mpsc::UnboundedSender<DhtRuntimeEvent>,
-    mut commands: mpsc::UnboundedReceiver<DhtCommand>,
+    mut commands: mpsc::Receiver<DhtCommand>,
+    mut shutdown: oneshot::Receiver<()>,
 ) {
     let mut interval = tokio::time::interval(config.tick_interval);
     let mut lookup_torrents = HashMap::<InfoHash, TorrentId>::new();
     loop {
         tokio::select! {
+            _ = &mut shutdown => {
+                break;
+            }
             _ = interval.tick() => {
                 emit_timeout_events(&mut runtime, &mut lookup_torrents, &events);
             }
@@ -182,9 +238,6 @@ async fn run_dht_worker(
                 let Some(command) = command else {
                     break;
                 };
-                if matches!(command, DhtCommand::Shutdown) {
-                    break;
-                }
                 handle_command(command, &socket, &mut runtime, &events, &mut lookup_torrents).await;
             }
             event = socket.poll_once() => {
@@ -244,7 +297,6 @@ async fn handle_command(
                 });
             }
         },
-        DhtCommand::Shutdown => {}
     }
 }
 
@@ -376,4 +428,36 @@ async fn send_outbound(
         }
     }
     sent
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dht_client_reports_backpressure_when_command_channel_is_full() {
+        let (tx, _rx) = mpsc::channel(1);
+        let client = DhtClient { tx };
+        client.try_send(DhtCommand::Bootstrap).unwrap();
+
+        let error = client.try_send(DhtCommand::Bootstrap).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RuntimeError::Backpressure {
+                stage: "dht_command"
+            }
+        ));
+    }
+
+    #[test]
+    fn dht_client_reports_cancellation_when_command_channel_is_closed() {
+        let (tx, rx) = mpsc::channel(1);
+        let client = DhtClient { tx };
+        drop(rx);
+
+        let error = client.try_send(DhtCommand::Bootstrap).unwrap_err();
+
+        assert!(matches!(error, RuntimeError::Cancelled));
+    }
 }

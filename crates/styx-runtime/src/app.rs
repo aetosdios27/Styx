@@ -39,7 +39,7 @@ pub struct AppRuntime {
     pending_magnets: HashMap<TorrentId, MagnetAdd>,
     pending_download_peers: HashMap<TorrentId, Vec<std::net::SocketAddr>>,
     persistent_torrents: BTreeMap<TorrentId, PersistentTorrent>,
-    dht_worker: Option<crate::DhtWorkerHandle>,
+    dht_worker: Option<crate::DhtClient>,
     dht_events: Option<mpsc::UnboundedReceiver<crate::DhtRuntimeEvent>>,
     dht_bootstrapped: bool,
     dht_announce_ready: HashSet<TorrentId>,
@@ -182,10 +182,10 @@ impl AppRuntime {
 
     pub fn attach_dht_worker(
         &mut self,
-        worker: crate::DhtWorkerHandle,
+        worker: crate::DhtClient,
         events: mpsc::UnboundedReceiver<crate::DhtRuntimeEvent>,
     ) -> Result<(), RuntimeError> {
-        worker.send(crate::DhtCommand::Bootstrap)?;
+        worker.try_send(crate::DhtCommand::Bootstrap)?;
         self.dht_worker = Some(worker);
         self.dht_events = Some(events);
         Ok(())
@@ -220,7 +220,7 @@ impl AppRuntime {
         if !self.dht_bootstrapped {
             return Ok(());
         }
-        worker.send(crate::DhtCommand::GetPeers {
+        worker.try_send(crate::DhtCommand::GetPeers {
             torrent: id,
             info_hash,
         })
@@ -243,7 +243,7 @@ impl AppRuntime {
             return;
         };
         if worker
-            .send(crate::DhtCommand::AnnouncePeer {
+            .try_send(crate::DhtCommand::AnnouncePeer {
                 torrent: id,
                 info_hash,
                 port: self.engine.config().listen_port,

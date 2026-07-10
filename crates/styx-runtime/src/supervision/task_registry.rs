@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{timeout_at, Instant};
 
@@ -10,12 +11,35 @@ use super::{FailureReasonCode, ShutdownMode, TaskExit, TaskKind};
 pub struct OwnedTask {
     kind: TaskKind,
     handle: JoinHandle<()>,
+    shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl OwnedTask {
     #[cfg(test)]
-    fn new(kind: TaskKind, handle: JoinHandle<()>) -> Self {
-        Self { kind, handle }
+    pub(crate) fn new(kind: TaskKind, handle: JoinHandle<()>) -> Self {
+        Self {
+            kind,
+            handle,
+            shutdown: None,
+        }
+    }
+
+    pub(crate) fn with_shutdown(
+        kind: TaskKind,
+        handle: JoinHandle<()>,
+        shutdown: oneshot::Sender<()>,
+    ) -> Self {
+        Self {
+            kind,
+            handle,
+            shutdown: Some(shutdown),
+        }
+    }
+
+    fn request_shutdown(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
     }
 }
 
@@ -50,6 +74,9 @@ impl TaskRegistry {
         let mut exits = BTreeMap::new();
 
         if mode == ShutdownMode::Clean {
+            for task in &mut pending {
+                task.request_shutdown();
+            }
             let deadline = deadline_after(clean_timeout);
             let mut first_pending = pending.len();
             for (index, task) in pending.iter_mut().enumerate() {

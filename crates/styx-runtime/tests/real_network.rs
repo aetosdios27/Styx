@@ -76,16 +76,14 @@ async fn real_network_magnet_resolves_metadata_and_downloads_one_piece() {
         ..DhtRuntimeConfig::default()
     };
     let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
-    let worker = spawn_dht_worker(dht.clone(), events_tx).await.unwrap();
+    let (client, owner) = spawn_dht_worker(dht.clone(), events_tx).await.unwrap();
     let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
         dht,
         source_timeout: Duration::from_secs(30),
         ..RuntimeConfig::default()
     })
     .unwrap();
-    runtime
-        .attach_dht_worker(worker.clone(), events_rx)
-        .unwrap();
+    runtime.attach_dht_worker(client, events_rx).unwrap();
     runtime
         .apply(ControlCommand::AddMagnet {
             uri: magnet,
@@ -108,7 +106,7 @@ async fn real_network_magnet_resolves_metadata_and_downloads_one_piece() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    worker.shutdown().await.unwrap();
+    owner.shutdown().await.unwrap();
     assert!(
         downloaded,
         "magnet made no verified progress before timeout"
