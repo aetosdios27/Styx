@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use reqwest::header::RANGE;
 use styx_disk::PieceIndex;
 use tokio::time::timeout;
@@ -76,7 +76,7 @@ pub(crate) async fn download_all_pieces_from_web_seed(
                 .send()
                 .await?
                 .error_for_status()?;
-            response.bytes().await
+            read_web_seed_body_bounded(response, piece, expected).await
         })
         .await
         .map_err(|_| RuntimeError::Timeout {
@@ -85,4 +85,73 @@ pub(crate) async fn download_all_pieces_from_web_seed(
         pieces.push(validate_web_seed_piece_bytes(piece, expected, bytes)?);
     }
     Ok(pieces)
+}
+
+pub(crate) async fn read_web_seed_body_bounded(
+    mut response: reqwest::Response,
+    piece: PieceIndex,
+    expected: u32,
+) -> Result<Bytes, RuntimeError> {
+    let expected_usize = expected as usize;
+    if let Some(length) = response.content_length() {
+        if length > u64::from(expected) {
+            return Err(RuntimeError::InvalidWebSeedLength {
+                piece: piece.get(),
+                expected: expected_usize,
+                actual: usize::try_from(length).unwrap_or(usize::MAX),
+            });
+        }
+    }
+    let mut body = BytesMut::with_capacity(expected_usize);
+    while let Some(chunk) = response.chunk().await? {
+        let actual = body.len().saturating_add(chunk.len());
+        if actual > expected_usize {
+            return Err(RuntimeError::InvalidWebSeedLength {
+                piece: piece.get(),
+                expected: expected_usize,
+                actual,
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.freeze())
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn bounded_web_seed_body_rejects_oversized_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n")
+                .await
+                .unwrap();
+            stream.write_all(&vec![b'x'; 1024 * 1024]).await.unwrap();
+        });
+        let response = reqwest::get(format!("http://{addr}/file.bin"))
+            .await
+            .unwrap();
+
+        let error = read_web_seed_body_bounded(response, PieceIndex::new(0), 4)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RuntimeError::InvalidWebSeedLength {
+                expected: 4,
+                actual: 1_048_576,
+                ..
+            }
+        ));
+    }
 }

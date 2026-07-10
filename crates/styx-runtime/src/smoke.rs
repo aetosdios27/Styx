@@ -128,7 +128,11 @@ async fn download_piece_from_web_seed(
         .send()
         .await?
         .error_for_status()?;
-    let bytes = response.bytes().await?;
+    let expected_u32 = u32::try_from(expected_len)
+        .map_err(|_| RuntimeError::InvalidConfig("web seed piece length exceeds u32"))?;
+    let bytes =
+        crate::download::read_web_seed_body_bounded(response, plan.target_piece, expected_u32)
+            .await?;
     if bytes.len() != expected_len {
         return Err(RuntimeError::InvalidWebSeedLength {
             piece: plan.target_piece.get(),
