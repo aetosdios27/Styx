@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use styx_runtime::{DaemonConfig, DaemonRuntime, RuntimeConfig};
 #[cfg(unix)]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[test]
 fn command_codec_rejects_trailing_json() {
@@ -87,6 +87,60 @@ async fn ipc_server_returns_error_for_malformed_json_and_keeps_running() {
     daemon.shutdown().await.unwrap();
     assert!(!malformed.ok);
     assert!(status.ok);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ipc_server_rejects_oversized_frame_and_keeps_running() {
+    let root = unique_temp_dir("styx-cli-ipc-oversized");
+    let socket = root.join("styx.sock");
+    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+        .await
+        .unwrap();
+    let server_socket = socket.clone();
+    let server_daemon = daemon.clone();
+    let server =
+        tokio::spawn(async move { serve_daemon_socket(&server_socket, server_daemon).await });
+    wait_for_socket(&socket).await;
+
+    let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    stream.write_all(&vec![b'x'; 64 * 1024 + 1]).await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let status = send_unix_command(&socket, &ControlCommand::Status)
+        .await
+        .unwrap();
+
+    server.abort();
+    daemon.shutdown().await.unwrap();
+    assert!(response.is_empty());
+    assert!(status.ok);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ipc_socket_and_parent_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = unique_temp_dir("styx-cli-ipc-permissions");
+    let socket = root.join("styx.sock");
+    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+        .await
+        .unwrap();
+    let server_socket = socket.clone();
+    let server_daemon = daemon.clone();
+    let server =
+        tokio::spawn(async move { serve_daemon_socket(&server_socket, server_daemon).await });
+    wait_for_socket(&socket).await;
+
+    let directory_mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+    let socket_mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
+
+    server.abort();
+    daemon.shutdown().await.unwrap();
+    assert_eq!(directory_mode, 0o700);
+    assert_eq!(socket_mode, 0o600);
 }
 
 #[cfg(unix)]

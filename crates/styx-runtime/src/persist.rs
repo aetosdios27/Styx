@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -100,10 +101,11 @@ impl PersistentStore {
     pub fn save(&self, state: &PersistentState) -> Result<(), RuntimeError> {
         state.clone().validate()?;
         fs::create_dir_all(&self.state_dir)?;
+        set_owner_only_directory(&self.state_dir)?;
         let tmp_path = self.state_dir.join("state.json.tmp");
         let bytes = serde_json::to_vec_pretty(state)
             .map_err(|_| RuntimeError::Persistence("failed to encode persistent state"))?;
-        fs::write(&tmp_path, bytes)?;
+        write_owner_only_file(&tmp_path, &bytes)?;
         fs::rename(tmp_path, &self.state_path)?;
         Ok(())
     }
@@ -112,6 +114,36 @@ impl PersistentStore {
     pub fn state_path(&self) -> &Path {
         &self.state_path
     }
+}
+
+#[cfg(unix)]
+fn set_owner_only_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_owner_only_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+#[cfg(not(unix))]
+fn write_owner_only_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fs::write(path, bytes)
 }
 
 #[derive(Deserialize)]

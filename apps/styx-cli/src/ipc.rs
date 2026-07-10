@@ -2,9 +2,11 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use styx_app::{CommandResponseEnvelope, ControlCommand, TorrentRuntime};
 use styx_runtime::{DaemonHandle, DaemonStatus};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::CliError;
+
+const MAX_IPC_FRAME_BYTES: usize = 64 * 1024;
 
 pub fn encode_command(command: &ControlCommand) -> Result<Vec<u8>, CliError> {
     encode_line(command)
@@ -91,10 +93,7 @@ pub async fn serve_unix_socket(
     path: &std::path::Path,
     mut runtime: impl TorrentRuntime + Send + 'static,
 ) -> Result<(), CliError> {
-    use tokio::net::UnixListener;
-
-    let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path)?;
+    let listener = bind_secure_unix_listener(path)?;
     loop {
         let (stream, _) = listener.accept().await?;
         handle_unix_stream(stream, &mut runtime).await?;
@@ -114,10 +113,7 @@ pub async fn serve_daemon_socket(
     path: &std::path::Path,
     daemon: DaemonHandle,
 ) -> Result<(), CliError> {
-    use tokio::net::UnixListener;
-
-    let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path)?;
+    let listener = bind_secure_unix_listener(path)?;
     loop {
         let (stream, _) = listener.accept().await?;
         let daemon = daemon.clone();
@@ -146,8 +142,7 @@ pub async fn send_unix_command(
     stream.write_all(&encode_command(command)?).await?;
     stream.shutdown().await?;
     let mut reader = BufReader::new(stream);
-    let mut response = Vec::new();
-    reader.read_until(b'\n', &mut response).await?;
+    let response = read_ipc_frame(&mut reader).await?;
     decode_exact(&response)
 }
 
@@ -162,8 +157,7 @@ pub async fn send_daemon_control(
     stream.write_all(&encode_line(command)?).await?;
     stream.shutdown().await?;
     let mut reader = BufReader::new(stream);
-    let mut response = Vec::new();
-    reader.read_until(b'\n', &mut response).await?;
+    let response = read_ipc_frame(&mut reader).await?;
     decode_exact(&response)
 }
 
@@ -181,8 +175,7 @@ async fn handle_daemon_stream(
     daemon: DaemonHandle,
 ) -> Result<(), CliError> {
     let mut reader = BufReader::new(stream);
-    let mut request = Vec::new();
-    reader.read_until(b'\n', &mut request).await?;
+    let request = read_ipc_frame(&mut reader).await?;
     if let Ok(command) = decode_exact::<DaemonControlCommand>(&request) {
         let response = handle_daemon_control(command, daemon).await;
         let mut stream = reader.into_inner();
@@ -245,8 +238,7 @@ where
     R: TorrentRuntime,
 {
     let mut reader = BufReader::new(stream);
-    let mut request = Vec::new();
-    reader.read_until(b'\n', &mut request).await?;
+    let request = read_ipc_frame(&mut reader).await?;
     let response = match decode_command(&request)
         .and_then(|command| runtime.apply(command).map_err(crate::error::CliError::from))
     {
@@ -257,4 +249,50 @@ where
     stream.write_all(&encode_response(&response)?).await?;
     stream.shutdown().await?;
     Ok(())
+}
+
+async fn read_ipc_frame<R>(reader: &mut R) -> Result<Vec<u8>, CliError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut frame = Vec::with_capacity(MAX_IPC_FRAME_BYTES.min(4096));
+    reader
+        .take((MAX_IPC_FRAME_BYTES + 1) as u64)
+        .read_to_end(&mut frame)
+        .await?;
+    if frame.len() > MAX_IPC_FRAME_BYTES {
+        return Err(CliError::IpcFrameTooLarge {
+            max: MAX_IPC_FRAME_BYTES,
+        });
+    }
+    Ok(frame)
+}
+
+#[cfg(unix)]
+fn bind_secure_unix_listener(path: &std::path::Path) -> Result<tokio::net::UnixListener, CliError> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "IPC path has no parent")
+    })?;
+    std::fs::create_dir_all(parent)?;
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    let parent_uid = std::fs::metadata(parent)?.uid();
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() || metadata.uid() != parent_uid {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "refusing to replace unsafe IPC path",
+                )
+                .into());
+            }
+            std::fs::remove_file(path)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let listener = tokio::net::UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
 }

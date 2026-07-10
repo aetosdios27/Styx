@@ -14,4 +14,6 @@ pub enum CliError {
     UnsupportedIpc,
     #[error("command is not supported by the memory runtime")]
     UnsupportedMemoryCommand,
+    #[error("IPC frame exceeds the {max} byte limit")]
+    IpcFrameTooLarge { max: usize },
 }

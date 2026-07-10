@@ -38,6 +38,27 @@ fn persistent_state_round_trips_torrent_manifest() {
     assert_eq!(restored, state);
 }
 
+#[cfg(unix)]
+#[test]
+fn persistent_store_uses_owner_only_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state_dir = temp.path().join("state");
+    let store = PersistentStore::open(&state_dir).unwrap();
+    store.save(&PersistentState::empty()).unwrap();
+
+    let directory_mode = std::fs::metadata(&state_dir).unwrap().permissions().mode() & 0o777;
+    let state_mode = std::fs::metadata(store.state_path())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+
+    assert_eq!(directory_mode, 0o700);
+    assert_eq!(state_mode, 0o600);
+}
+
 #[test]
 fn persistent_store_rejects_unknown_schema_version() {
     let temp = tempfile::tempdir().unwrap();
