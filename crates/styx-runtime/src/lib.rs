@@ -65,8 +65,8 @@ pub use source::{
     SourceState, SourceTable,
 };
 pub use supervision::{
-    FailureReasonCode, PersistenceOutcome, SharedWorkerKind, ShutdownMode, ShutdownReport,
-    TaskExit, TaskKind,
+    FailureReasonCode, OwnedTask, PersistenceOutcome, SharedWorkerKind, ShutdownMode,
+    ShutdownReport, TaskExit, TaskKind, TaskRegistry,
 };
 pub use task::TorrentTask;
 pub use torrent::{load_torrent_plan, TorrentId, TorrentPlan, TorrentSmokePlan};

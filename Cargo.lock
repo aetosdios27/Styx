@@ -4105,6 +4105,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "static_assertions",
  "styx-app",
  "styx-core",
  "styx-dht",
