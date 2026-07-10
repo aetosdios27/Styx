@@ -43,6 +43,7 @@ fn private_torrent_is_never_a_dht_announce_target() {
 
     assert!(engine.dht_announce_targets().is_empty());
     assert_eq!(engine.dht_announce_target(id), None);
+    assert!(engine.lsd_announce_targets().is_empty());
 }
 
 fn private_torrent_bytes() -> Vec<u8> {

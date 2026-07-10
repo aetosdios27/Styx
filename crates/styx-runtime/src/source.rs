@@ -15,6 +15,7 @@ pub enum SourceKind {
     Peer,
     DhtPeer,
     PexPeer,
+    LsdPeer,
     WebSeed,
 }
 
@@ -235,6 +236,10 @@ impl SourceTable {
 
     pub fn add_pex_peer(&mut self, address: SocketAddr) -> Result<SourceId, RuntimeError> {
         self.add_candidate(SourceEndpoint::Peer(address), SourceKind::PexPeer)
+    }
+
+    pub fn add_lsd_peer(&mut self, address: SocketAddr) -> Result<SourceId, RuntimeError> {
+        self.add_candidate(SourceEndpoint::Peer(address), SourceKind::LsdPeer)
     }
 
     pub fn state(&self, source: SourceId) -> Result<SourceState, RuntimeError> {

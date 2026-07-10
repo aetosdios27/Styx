@@ -200,6 +200,13 @@ impl TorrentTask {
         added
     }
 
+    pub fn add_lsd_peer(&mut self, peer: SocketAddr) -> bool {
+        DiscoveryPolicy::from_metainfo(&self.plan.metainfo).lsd_allowed()
+            && peer.port() != 0
+            && !peer.ip().is_unspecified()
+            && self.sources.add_lsd_peer(peer).is_ok()
+    }
+
     #[must_use]
     pub(crate) fn dht_announce_target(&self) -> Option<styx_dht::InfoHash> {
         let active = matches!(
@@ -208,6 +215,15 @@ impl TorrentTask {
         );
         (active && DiscoveryPolicy::from_metainfo(&self.plan.metainfo).dht_allowed())
             .then(|| styx_dht::InfoHash::new(*self.plan.info_hash.as_bytes()))
+    }
+
+    pub(crate) fn lsd_announce_target(&self) -> Option<styx_proto::InfoHashV1> {
+        let active = matches!(
+            self.status,
+            TorrentStatus::Discovering | TorrentStatus::Downloading | TorrentStatus::Seeding
+        );
+        (active && DiscoveryPolicy::from_metainfo(&self.plan.metainfo).lsd_allowed())
+            .then_some(self.plan.info_hash)
     }
 
     pub fn apply(&mut self, command: TorrentCommand) -> Result<Vec<RuntimeEvent>, RuntimeError> {

@@ -206,6 +206,20 @@ impl RuntimeEngine {
         self.tasks.get(&id)?.dht_announce_target()
     }
 
+    #[must_use]
+    pub fn lsd_announce_targets(&self) -> Vec<(TorrentId, styx_proto::InfoHashV1)> {
+        self.tasks
+            .iter()
+            .filter_map(|(id, task)| task.lsd_announce_target().map(|hash| (*id, hash)))
+            .collect()
+    }
+
+    pub fn add_lsd_peer(&mut self, id: TorrentId, peer: SocketAddr) -> bool {
+        self.tasks
+            .get_mut(&id)
+            .is_some_and(|task| task.add_lsd_peer(peer))
+    }
+
     pub async fn resume_verify(&mut self, id: TorrentId) -> Result<ResumeSummary, RuntimeError> {
         let task = self
             .tasks

@@ -44,6 +44,9 @@ pub struct AppRuntime {
     dht_bootstrapped: bool,
     dht_announce_ready: HashSet<TorrentId>,
     dht_last_announce: HashMap<TorrentId, Instant>,
+    lsd_worker: Option<crate::LsdWorkerHandle>,
+    lsd_events: Option<mpsc::UnboundedReceiver<crate::LsdRuntimeEvent>>,
+    lsd_targets: Vec<(TorrentId, styx_proto::InfoHashV1)>,
 }
 
 #[derive(Debug)]
@@ -72,6 +75,9 @@ impl AppRuntime {
             dht_bootstrapped: false,
             dht_announce_ready: HashSet::new(),
             dht_last_announce: HashMap::new(),
+            lsd_worker: None,
+            lsd_events: None,
+            lsd_targets: Vec::new(),
         }
     }
 
@@ -183,6 +189,15 @@ impl AppRuntime {
         self.dht_worker = Some(worker);
         self.dht_events = Some(events);
         Ok(())
+    }
+
+    pub fn attach_lsd_worker(
+        &mut self,
+        worker: crate::LsdWorkerHandle,
+        events: mpsc::UnboundedReceiver<crate::LsdRuntimeEvent>,
+    ) {
+        self.lsd_worker = Some(worker);
+        self.lsd_events = Some(events);
     }
 
     fn request_dht_peers(&self, id: TorrentId, add: &MagnetAdd) -> Result<(), RuntimeError> {
@@ -555,6 +570,22 @@ impl TorrentRuntime for AppRuntime {
         }
         for (id, _) in self.engine.dht_announce_targets() {
             self.announce_dht_if_ready(id);
+        }
+        if let Some(events) = &mut self.lsd_events {
+            while let Ok(crate::LsdRuntimeEvent::PeerDiscovered { torrent, peer }) =
+                events.try_recv()
+            {
+                let _ = self.engine.add_lsd_peer(torrent, peer);
+            }
+        }
+        let lsd_targets = self.engine.lsd_announce_targets();
+        if lsd_targets != self.lsd_targets {
+            self.lsd_targets = lsd_targets.clone();
+            if let Some(worker) = &self.lsd_worker {
+                let _ = worker.send(crate::LsdCommand::Update {
+                    torrents: lsd_targets,
+                });
+            }
         }
         // 1. Process background download events
         while let Ok(bg) = self.bg_rx.try_recv() {

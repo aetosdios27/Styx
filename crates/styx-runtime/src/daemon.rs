@@ -70,8 +70,15 @@ impl DaemonRuntime {
         } else {
             None
         };
+        let (lsd_events_tx, lsd_events_rx) = mpsc::unbounded_channel();
+        let lsd_worker = crate::spawn_lsd_worker(config.runtime_config.listen_port, lsd_events_tx);
+        if let Some(worker) = &lsd_worker {
+            runtime
+                .runtime_mut()
+                .attach_lsd_worker(worker.clone(), lsd_events_rx);
+        }
         let (tx, rx) = mpsc::channel(64);
-        let join = tokio::spawn(run_daemon(config, runtime, rx, dht_worker));
+        let join = tokio::spawn(run_daemon(config, runtime, rx, dht_worker, lsd_worker));
         Ok(DaemonHandle {
             tx,
             join: Arc::new(Mutex::new(Some(join))),
@@ -125,6 +132,7 @@ async fn run_daemon(
     mut runtime: PersistentAppRuntime,
     mut rx: mpsc::Receiver<DaemonRequest>,
     dht_worker: Option<crate::DhtWorkerHandle>,
+    lsd_worker: Option<crate::LsdWorkerHandle>,
 ) {
     let started = Instant::now();
     let mut interval = tokio::time::interval(config.tick_interval);
@@ -153,6 +161,9 @@ async fn run_daemon(
     }
     if let Some(worker) = dht_worker {
         let _ = worker.shutdown().await;
+    }
+    if let Some(worker) = lsd_worker {
+        worker.shutdown().await;
     }
 }
 
