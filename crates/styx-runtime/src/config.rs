@@ -15,6 +15,15 @@ pub struct RuntimeConfig {
     pub peer: PeerManagerConfig,
     pub seed_policy: SeedPolicy,
     pub dht: DhtRuntimeConfig,
+    pub session: SessionRuntimeConfig,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionRuntimeConfig {
+    pub command_capacity: usize,
+    pub event_capacity: usize,
+    pub shutdown_timeout: Duration,
+    pub forced_shutdown_timeout: Duration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +53,7 @@ impl Default for RuntimeConfig {
             peer: PeerManagerConfig::default(),
             seed_policy: SeedPolicy::default(),
             dht: DhtRuntimeConfig::default(),
+            session: SessionRuntimeConfig::default(),
         }
     }
 }
@@ -69,6 +79,17 @@ impl Default for SeedPolicy {
     }
 }
 
+impl Default for SessionRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            command_capacity: 256,
+            event_capacity: 1024,
+            shutdown_timeout: Duration::from_secs(10),
+            forced_shutdown_timeout: Duration::from_secs(2),
+        }
+    }
+}
+
 impl RuntimeConfig {
     pub fn validate(self) -> Result<Self, RuntimeError> {
         validate_duration(self.connect_timeout, "connect_timeout")?;
@@ -84,6 +105,20 @@ impl RuntimeConfig {
             _ => RuntimeError::InvalidConfig("peer manager config is invalid"),
         })?;
         self.dht.validate()?;
+        self.session.validate()?;
+        Ok(self)
+    }
+}
+
+impl SessionRuntimeConfig {
+    pub fn validate(self) -> Result<Self, RuntimeError> {
+        validate_nonzero(self.command_capacity, "session_command_capacity")?;
+        validate_nonzero(self.event_capacity, "session_event_capacity")?;
+        validate_duration(self.shutdown_timeout, "session_shutdown_timeout")?;
+        validate_duration(
+            self.forced_shutdown_timeout,
+            "session_forced_shutdown_timeout",
+        )?;
         Ok(self)
     }
 }
@@ -127,6 +162,12 @@ fn invalid_nonzero(field: &'static str) -> RuntimeError {
         "max_web_seed_concurrency" => "max_web_seed_concurrency must be greater than zero",
         "max_event_queue" => "max_event_queue must be greater than zero",
         "source_retry_limit" => "source_retry_limit must be greater than zero",
+        "session_command_capacity" => "session command capacity must be greater than zero",
+        "session_event_capacity" => "session event capacity must be greater than zero",
+        "session_shutdown_timeout" => "session shutdown timeout must be greater than zero",
+        "session_forced_shutdown_timeout" => {
+            "session forced shutdown timeout must be greater than zero"
+        }
         _ => "runtime config value must be greater than zero",
     })
 }

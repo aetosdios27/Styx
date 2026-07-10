@@ -24,6 +24,7 @@ mod settings;
 mod smoke;
 mod snapshot;
 mod source;
+mod supervision;
 mod task;
 mod torrent;
 mod tracker;
@@ -31,7 +32,7 @@ mod types;
 mod web_seed;
 
 pub use app::{AppRuntime, PersistentAppRuntime};
-pub use config::{RuntimeConfig, RuntimeLimits, SeedPolicy};
+pub use config::{RuntimeConfig, RuntimeLimits, SeedPolicy, SessionRuntimeConfig};
 pub use control::{RuntimeCommand, TorrentCommand};
 pub use daemon::{DaemonConfig, DaemonHandle, DaemonRuntime, DaemonStatus};
 pub use dht::{spawn_dht_worker, DhtCommand, DhtRuntimeConfig, DhtRuntimeEvent, DhtWorkerHandle};
@@ -62,6 +63,10 @@ pub use snapshot::{PeerSnapshot, RuntimeEvent, RuntimeSnapshot, TorrentSnapshot,
 pub use source::{
     BlockCorruptionTracker, SourceCandidate, SourceEndpoint, SourceFailure, SourceId, SourceKind,
     SourceState, SourceTable,
+};
+pub use supervision::{
+    FailureReasonCode, PersistenceOutcome, SharedWorkerKind, ShutdownMode, ShutdownReport,
+    TaskExit, TaskKind,
 };
 pub use task::TorrentTask;
 pub use torrent::{load_torrent_plan, TorrentId, TorrentPlan, TorrentSmokePlan};
