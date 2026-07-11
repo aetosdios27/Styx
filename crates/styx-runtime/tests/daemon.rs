@@ -2,29 +2,114 @@ use std::{collections::BTreeMap, time::Duration};
 
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
+use static_assertions::{assert_impl_all, assert_not_impl_any};
 use styx_app::{commands::CommandResponse, ControlCommand, TorrentStatus};
 use styx_proto::{
     decode_handshake, encode, write_handshake, write_message, BencodeValue, ExtensionBits,
     Handshake, PeerId, PeerMessage, PEER_HANDSHAKE_LEN,
 };
 use styx_runtime::{
-    DaemonConfig, DaemonRuntime, PersistentState, PersistentStore, PersistentTorrent,
-    PersistentTorrentSource, PersistentTorrentState, RuntimeConfig,
+    DaemonClient, DaemonConfig, DaemonOwner, DaemonRuntime, PersistentState, PersistentStore,
+    PersistentTorrent, PersistentTorrentSource, PersistentTorrentState, RuntimeConfig,
     PERSISTENT_STATE_SCHEMA_VERSION,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+
+assert_impl_all!(DaemonClient: Clone);
+assert_not_impl_any!(DaemonOwner: Clone);
 
 #[tokio::test]
 async fn daemon_start_loads_empty_state_and_reports_status() {
     let temp = tempfile::tempdir().unwrap();
     let config = daemon_config(temp.path());
 
-    let daemon = DaemonRuntime::start(config).await.unwrap();
+    let (daemon, owner) = DaemonRuntime::start(config).await.unwrap();
     let status = daemon.status().await.unwrap();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
     assert_eq!(status.torrent_count, 0);
+}
+
+#[tokio::test]
+async fn dropping_all_clients_terminates_the_unique_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let (client, owner) = DaemonRuntime::start(daemon_config(temp.path()))
+        .await
+        .unwrap();
+
+    drop(client);
+
+    let report = tokio::time::timeout(Duration::from_secs(2), owner.wait())
+        .await
+        .expect("daemon survived closure of every operational client")
+        .unwrap();
+    assert_eq!(report.aborted_count(), 0);
+}
+
+#[tokio::test]
+async fn dropping_owner_aborts_daemon_and_closes_retained_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let (client, owner) = DaemonRuntime::start(daemon_config(temp.path()))
+        .await
+        .unwrap();
+
+    drop(owner);
+
+    let result = tokio::time::timeout(Duration::from_secs(1), client.status())
+        .await
+        .expect("retained client did not observe owner drop");
+    assert_eq!(result.unwrap_err(), styx_runtime::RuntimeError::Cancelled);
+}
+
+#[tokio::test]
+async fn concurrent_shutdown_has_one_acceptance_and_one_stable_rejection() {
+    let temp = tempfile::tempdir().unwrap();
+    let (client, owner) = DaemonRuntime::start(daemon_config(temp.path()))
+        .await
+        .unwrap();
+    let other = client.clone();
+
+    let (first, second) = tokio::join!(client.request_shutdown(), other.request_shutdown());
+    let report = owner.wait().await.unwrap();
+
+    assert!(first.is_ok() ^ second.is_ok());
+    assert!(
+        matches!(first, Err(styx_runtime::RuntimeError::Cancelled))
+            || matches!(second, Err(styx_runtime::RuntimeError::Cancelled))
+    );
+    assert_eq!(
+        report.persistence,
+        styx_runtime::PersistenceOutcome::Succeeded
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persistence_failure_retains_shutdown_report() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = daemon_config(temp.path());
+    let state_dir = config.state_dir.clone();
+    let (client, owner) = DaemonRuntime::start(config).await.unwrap();
+    std::fs::write(&state_dir, b"hostile state path").unwrap();
+
+    let acknowledgement = client.request_shutdown().await;
+    let completion = owner.wait().await;
+    std::fs::remove_file(&state_dir).unwrap();
+
+    assert!(acknowledgement.is_err());
+    let styx_runtime::RuntimeError::DaemonShutdown { reason, report } = completion.unwrap_err()
+    else {
+        panic!("expected daemon shutdown evidence");
+    };
+    assert_eq!(reason, styx_runtime::FailureReasonCode::PersistenceFailed);
+    assert_eq!(
+        report.persistence,
+        styx_runtime::PersistenceOutcome::Failed(
+            styx_runtime::FailureReasonCode::PersistenceFailed
+        )
+    );
 }
 
 #[tokio::test]
@@ -32,12 +117,13 @@ async fn empty_daemon_shutdown_completes_with_best_effort_lsd_configured() {
     let root = tempfile::tempdir().unwrap();
     let mut config = daemon_config(root.path());
     config.runtime_config.dht.enabled = false;
-    let daemon = DaemonRuntime::start(config).await.unwrap();
+    let (daemon, owner) = DaemonRuntime::start(config).await.unwrap();
 
-    tokio::time::timeout(Duration::from_secs(2), daemon.shutdown())
+    tokio::time::timeout(Duration::from_secs(2), daemon.request_shutdown())
         .await
         .expect("daemon shutdown exceeded its external deadline")
         .unwrap();
+    owner.wait().await.unwrap();
 }
 
 #[tokio::test]
@@ -49,7 +135,7 @@ async fn daemon_apply_add_persists_and_status_returns_torrent() {
     let config = daemon_config(temp.path());
     let store = PersistentStore::open(temp.path().join("state")).unwrap();
 
-    let daemon = DaemonRuntime::start(config).await.unwrap();
+    let (daemon, owner) = DaemonRuntime::start(config).await.unwrap();
     daemon
         .apply(ControlCommand::Add {
             source: torrent,
@@ -58,7 +144,8 @@ async fn daemon_apply_add_persists_and_status_returns_torrent() {
         .await
         .unwrap();
     let response = daemon.apply(ControlCommand::Status).await.unwrap();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
     let CommandResponse::Status { snapshot } = response else {
         panic!("expected status response");
@@ -76,7 +163,7 @@ async fn daemon_shutdown_persists_latest_state() {
     let config = daemon_config(temp.path());
     let store = PersistentStore::open(temp.path().join("state")).unwrap();
 
-    let daemon = DaemonRuntime::start(config).await.unwrap();
+    let (daemon, owner) = DaemonRuntime::start(config).await.unwrap();
     daemon
         .apply(ControlCommand::Add {
             source: torrent,
@@ -84,7 +171,8 @@ async fn daemon_shutdown_persists_latest_state() {
         })
         .await
         .unwrap();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
     assert_eq!(store.load().unwrap().torrents.len(), 1);
 }
@@ -96,7 +184,7 @@ async fn daemon_restart_restores_torrent_from_state() {
     let destination = temp.path().join("downloads");
     std::fs::write(&torrent, torrent_from_chunks(&[b"abcd".as_slice()])).unwrap();
 
-    let daemon = DaemonRuntime::start(daemon_config(temp.path()))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(temp.path()))
         .await
         .unwrap();
     daemon
@@ -106,13 +194,15 @@ async fn daemon_restart_restores_torrent_from_state() {
         })
         .await
         .unwrap();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
-    let daemon = DaemonRuntime::start(daemon_config(temp.path()))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(temp.path()))
         .await
         .unwrap();
     let response = daemon.apply(ControlCommand::Status).await.unwrap();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
     let CommandResponse::Status { snapshot } = response else {
         panic!("expected status response");
@@ -127,7 +217,7 @@ async fn restart_after_unclean_abort_restores_last_persisted_add() {
     let destination = temp.path().join("downloads");
     std::fs::write(&torrent, torrent_from_chunks(&[b"abcd".as_slice()])).unwrap();
 
-    let daemon = DaemonRuntime::start(daemon_config(temp.path()))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(temp.path()))
         .await
         .unwrap();
     daemon
@@ -137,13 +227,14 @@ async fn restart_after_unclean_abort_restores_last_persisted_add() {
         })
         .await
         .unwrap();
-    daemon.abort().await;
+    owner.abort().await;
 
-    let daemon = DaemonRuntime::start(daemon_config(temp.path()))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(temp.path()))
         .await
         .unwrap();
     let response = daemon.apply(ControlCommand::Status).await.unwrap();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
     let CommandResponse::Status { snapshot } = response else {
         panic!("expected status response");
@@ -163,7 +254,7 @@ async fn restart_remembers_completed_torrent_after_shutdown() {
     )
     .unwrap();
 
-    let daemon = DaemonRuntime::start(daemon_config(temp.path()))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(temp.path()))
         .await
         .unwrap();
     daemon
@@ -183,13 +274,15 @@ async fn restart_remembers_completed_torrent_after_shutdown() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
-    let daemon = DaemonRuntime::start(daemon_config(temp.path()))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(temp.path()))
         .await
         .unwrap();
     let response = daemon.apply(ControlCommand::Status).await.unwrap();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
     let CommandResponse::Status { snapshot } = response else {
         panic!("expected status response");
@@ -223,11 +316,12 @@ async fn restart_rechecks_partial_piece_state_before_continuing() {
         })
         .unwrap();
 
-    let daemon = DaemonRuntime::start(daemon_config(temp.path()))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(temp.path()))
         .await
         .unwrap();
     let response = daemon.apply(ControlCommand::Status).await.unwrap();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
     let CommandResponse::Status { snapshot } = response else {
         panic!("expected status response");
@@ -264,18 +358,20 @@ async fn daemon_restart_can_serve_block_from_restored_completed_torrent() {
         })
         .unwrap();
 
-    let daemon = DaemonRuntime::start(daemon_config(temp.path()))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(temp.path()))
         .await
         .unwrap();
     for _ in 0..100 {
         if let Ok(received) = leecher.rx.try_recv() {
-            daemon.shutdown().await.unwrap();
+            daemon.request_shutdown().await.unwrap();
+            owner.wait().await.unwrap();
             assert_eq!(received, piece_bytes);
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
 
     panic!("restored completed torrent did not serve the interested leecher");
 }

@@ -18,4 +18,6 @@ pub enum CliError {
     IpcFrameTooLarge { max: usize },
     #[error("IPC frame must end with a newline")]
     UnterminatedIpcFrame,
+    #[error("IPC frame read timed out")]
+    IpcReadTimeout,
 }

@@ -99,14 +99,27 @@ pub async fn run(cli: Cli) -> Result<()> {
                     listen_port: cli.listen_port,
                     ..RuntimeConfig::default()
                 };
-                let daemon = DaemonRuntime::start(DaemonConfig {
+                let (daemon, owner) = DaemonRuntime::start(DaemonConfig {
                     state_dir: state_dir.clone(),
                     socket_path: socket.clone(),
                     tick_interval: config.snapshot_interval,
                     runtime_config: config,
                 })
                 .await?;
-                serve_daemon_socket(socket, daemon).await?;
+                let shutdown = daemon.clone();
+                let mut owner_wait = Box::pin(owner.wait());
+                let mut socket_server = Box::pin(serve_daemon_socket(socket, daemon));
+                tokio::select! {
+                    result = &mut socket_server => {
+                        let _ = shutdown.request_shutdown().await;
+                        result?;
+                        let _ = owner_wait.await?;
+                    }
+                    result = &mut owner_wait => {
+                        let _ = result?;
+                        socket_server.await?;
+                    }
+                }
                 return Ok(());
             }
             run_daemon_command_once(command.clone(), std::io::stdout()).await?;

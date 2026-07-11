@@ -1,7 +1,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use styx_app::{CommandResponseEnvelope, ControlCommand, TorrentRuntime};
-use styx_runtime::{DaemonHandle, DaemonStatus};
+use styx_runtime::{DaemonClient, DaemonStatus};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::CliError;
@@ -154,22 +154,39 @@ pub async fn serve_unix_socket(
 #[cfg(unix)]
 pub async fn serve_daemon_socket(
     path: &std::path::Path,
-    daemon: DaemonHandle,
+    daemon: DaemonClient,
 ) -> Result<(), CliError> {
+    const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+    const MAX_DAEMON_HANDLERS: usize = 64;
     let listener = bind_secure_unix_listener(path)?;
+    let mut handlers = tokio::task::JoinSet::new();
     loop {
-        let (stream, _) = listener.accept().await?;
-        let daemon = daemon.clone();
-        tokio::spawn(async move {
-            let _ = handle_daemon_stream(stream, daemon).await;
-        });
+        tokio::select! {
+            () = daemon.stopping() => break,
+            accepted = listener.accept(), if handlers.len() < MAX_DAEMON_HANDLERS => {
+                let (stream, _) = accepted?;
+                let client = daemon.clone();
+                handlers.spawn(async move { handle_daemon_stream(stream, client).await });
+            }
+            Some(_) = handlers.join_next(), if !handlers.is_empty() => {}
+        }
     }
+    daemon.completed().await;
+    let drained = tokio::time::timeout(SHUTDOWN_DRAIN_GRACE, async {
+        while handlers.join_next().await.is_some() {}
+    })
+    .await;
+    if drained.is_err() {
+        handlers.abort_all();
+        while handlers.join_next().await.is_some() {}
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
 pub async fn serve_daemon_socket(
     _path: &std::path::Path,
-    _daemon: DaemonHandle,
+    _daemon: DaemonClient,
 ) -> Result<(), CliError> {
     Err(CliError::UnsupportedIpc)
 }
@@ -215,10 +232,13 @@ pub async fn send_daemon_control(
 #[cfg(unix)]
 async fn handle_daemon_stream(
     stream: tokio::net::UnixStream,
-    daemon: DaemonHandle,
+    daemon: DaemonClient,
 ) -> Result<(), CliError> {
+    const FRAME_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
     let mut reader = BufReader::new(stream);
-    let request = read_ipc_frame(&mut reader).await?;
+    let request = tokio::time::timeout(FRAME_READ_DEADLINE, read_ipc_frame(&mut reader))
+        .await
+        .map_err(|_| CliError::IpcReadTimeout)??;
     if let Ok(command) = decode_exact::<DaemonControlCommand>(&request) {
         let response = handle_daemon_control(command, daemon).await;
         let mut stream = reader.into_inner();
@@ -241,14 +261,14 @@ async fn handle_daemon_stream(
 
 async fn handle_daemon_control(
     command: DaemonControlCommand,
-    daemon: DaemonHandle,
+    daemon: DaemonClient,
 ) -> DaemonResponseEnvelope {
     match command {
         DaemonControlCommand::Status => match daemon.status().await {
             Ok(status) => DaemonResponseEnvelope::ok(status_response(status)),
             Err(error) => DaemonResponseEnvelope::err(error.to_string()),
         },
-        DaemonControlCommand::Stop => match daemon.shutdown().await {
+        DaemonControlCommand::Stop => match daemon.request_shutdown().await {
             Ok(()) => DaemonResponseEnvelope::ok(DaemonControlResponse::Stopped),
             Err(error) => DaemonResponseEnvelope::err(error.to_string()),
         },

@@ -49,7 +49,7 @@ fn direct_add_magnet_invalid_uri_returns_error_json() {
 async fn daemon_status_command_writes_success_json() {
     let root = unique_temp_dir("styx-cli-daemon-status");
     let socket = root.join("styx.sock");
-    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
         .await
         .unwrap();
     let server_socket = socket.clone();
@@ -64,7 +64,8 @@ async fn daemon_status_command_writes_success_json() {
         .unwrap();
 
     server.abort();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(value["ok"], true);
     assert_eq!(value["response"]["type"], "daemon_status");
@@ -74,7 +75,7 @@ async fn daemon_status_command_writes_success_json() {
 async fn daemon_stop_command_writes_success_json() {
     let root = unique_temp_dir("styx-cli-daemon-stop");
     let socket = root.join("styx.sock");
-    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
         .await
         .unwrap();
     let server_socket = socket.clone();
@@ -89,17 +90,52 @@ async fn daemon_stop_command_writes_success_json() {
         .unwrap();
 
     server.abort();
+    owner.wait().await.unwrap();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(value["ok"], true);
     assert_eq!(value["response"]["type"], "daemon_stopped");
 }
 
+#[tokio::test]
+async fn daemon_stop_flushes_response_and_bounds_stalled_connection_drain() {
+    use tokio::io::AsyncWriteExt;
+
+    let root = unique_temp_dir("styx-cli-daemon-stalled-stop");
+    let socket = root.join("styx.sock");
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
+        .await
+        .unwrap();
+    let server_socket = socket.clone();
+    let server_daemon = daemon.clone();
+    let server =
+        tokio::spawn(async move { serve_daemon_socket(&server_socket, server_daemon).await });
+    wait_for_socket(&socket).await;
+    let mut stalled = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    stalled.write_all(b"{\"type\":").await.unwrap();
+    let mut output = Vec::new();
+
+    run_daemon_command_once(DaemonCommand::Stop { socket }, &mut output)
+        .await
+        .unwrap();
+    owner.wait().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("stalled IPC client blocked daemon socket drain")
+        .unwrap()
+        .unwrap();
+
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["response"]["type"], "daemon_stopped");
+}
+
 fn daemon_config(root: &std::path::Path, socket: &std::path::Path) -> DaemonConfig {
+    let mut runtime_config = RuntimeConfig::default();
+    runtime_config.dht.bind = "127.0.0.1:0".parse().unwrap();
     DaemonConfig {
         state_dir: root.join("state"),
         socket_path: socket.to_path_buf(),
         tick_interval: Duration::from_millis(10),
-        runtime_config: RuntimeConfig::default(),
+        runtime_config,
     }
 }
 

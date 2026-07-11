@@ -59,7 +59,7 @@ fn command_envelope_defaults_to_current_protocol_version() {
 async fn ipc_server_routes_status_to_daemon_handle() {
     let root = unique_temp_dir("styx-cli-ipc-status");
     let socket = root.join("styx.sock");
-    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
         .await
         .unwrap();
     let server_socket = socket.clone();
@@ -73,7 +73,8 @@ async fn ipc_server_routes_status_to_daemon_handle() {
         .unwrap();
 
     server.abort();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
     assert!(response.ok);
 }
 
@@ -82,7 +83,7 @@ async fn ipc_server_routes_status_to_daemon_handle() {
 async fn ipc_server_returns_error_for_malformed_json_and_keeps_running() {
     let root = unique_temp_dir("styx-cli-ipc-malformed");
     let socket = root.join("styx.sock");
-    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
         .await
         .unwrap();
     let server_socket = socket.clone();
@@ -97,7 +98,8 @@ async fn ipc_server_returns_error_for_malformed_json_and_keeps_running() {
         .unwrap();
 
     server.abort();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
     assert!(!malformed.ok);
     assert!(status.ok);
 }
@@ -107,7 +109,7 @@ async fn ipc_server_returns_error_for_malformed_json_and_keeps_running() {
 async fn ipc_server_rejects_oversized_frame_and_keeps_running() {
     let root = unique_temp_dir("styx-cli-ipc-oversized");
     let socket = root.join("styx.sock");
-    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
         .await
         .unwrap();
     let server_socket = socket.clone();
@@ -126,7 +128,8 @@ async fn ipc_server_rejects_oversized_frame_and_keeps_running() {
         .unwrap();
 
     server.abort();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
     assert!(response.is_empty());
     assert!(status.ok);
 }
@@ -136,7 +139,7 @@ async fn ipc_server_rejects_oversized_frame_and_keeps_running() {
 async fn ipc_server_rejects_unterminated_frame_and_keeps_running() {
     let root = unique_temp_dir("styx-cli-ipc-unterminated");
     let socket = root.join("styx.sock");
-    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
         .await
         .unwrap();
     let server_socket = socket.clone();
@@ -155,7 +158,8 @@ async fn ipc_server_rejects_unterminated_frame_and_keeps_running() {
         .unwrap();
 
     server.abort();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
     assert!(response.is_empty());
     assert!(status.ok);
 }
@@ -166,13 +170,14 @@ async fn ipc_server_refuses_to_replace_hostile_existing_file() {
     let root = unique_temp_dir("styx-cli-ipc-hostile-path");
     let socket = root.join("styx.sock");
     std::fs::write(&socket, b"do-not-delete").unwrap();
-    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
         .await
         .unwrap();
 
     let result = serve_daemon_socket(&socket, daemon.clone()).await;
 
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
     assert!(result.is_err());
     assert_eq!(std::fs::read(&socket).unwrap(), b"do-not-delete");
 }
@@ -184,7 +189,7 @@ async fn ipc_socket_and_parent_are_owner_only() {
 
     let root = unique_temp_dir("styx-cli-ipc-permissions");
     let socket = root.join("styx.sock");
-    let daemon = DaemonRuntime::start(daemon_config(&root, &socket))
+    let (daemon, owner) = DaemonRuntime::start(daemon_config(&root, &socket))
         .await
         .unwrap();
     let server_socket = socket.clone();
@@ -197,7 +202,8 @@ async fn ipc_socket_and_parent_are_owner_only() {
     let socket_mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
 
     server.abort();
-    daemon.shutdown().await.unwrap();
+    daemon.request_shutdown().await.unwrap();
+    owner.wait().await.unwrap();
     assert_eq!(directory_mode, 0o700);
     assert_eq!(socket_mode, 0o600);
 }

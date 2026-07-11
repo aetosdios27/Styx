@@ -72,6 +72,11 @@ pub enum RuntimeError {
     Cancelled,
     #[error("persistent state error: {0}")]
     Persistence(&'static str),
+    #[error("daemon shutdown failed: {reason:?}")]
+    DaemonShutdown {
+        reason: crate::FailureReasonCode,
+        report: Box<crate::ShutdownReport>,
+    },
     #[error("metadata exchange failed: {0}")]
     Metadata(String),
     #[error("magnet resolution failed: {0}")]
@@ -100,7 +105,7 @@ impl RuntimeError {
             Self::Backpressure { .. } | Self::Cancelled | Self::InvalidConfig(_) => {
                 FailureScope::RuntimeGlobal
             }
-            Self::Persistence(_) => FailureScope::RuntimeGlobal,
+            Self::Persistence(_) | Self::DaemonShutdown { .. } => FailureScope::RuntimeGlobal,
             Self::Metadata(_) => FailureScope::SourceLocal,
             Self::Magnet(_) => FailureScope::TorrentGlobal,
             Self::NoHttpTracker
@@ -148,6 +153,7 @@ impl RuntimeError {
             | Self::UnsupportedWebSeedLayout
             | Self::InvalidConfig(_)
             | Self::Persistence(_)
+            | Self::DaemonShutdown { .. }
             | Self::Magnet(_)
             | Self::InvalidTrackerUrl { .. }
             | Self::Cancelled

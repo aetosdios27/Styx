@@ -34,7 +34,7 @@ mod web_seed;
 pub use app::{AppRuntime, PersistentAppRuntime};
 pub use config::{RuntimeConfig, RuntimeLimits, SeedPolicy, SessionRuntimeConfig};
 pub use control::{RuntimeCommand, TorrentCommand};
-pub use daemon::{DaemonConfig, DaemonHandle, DaemonRuntime, DaemonStatus};
+pub use daemon::{DaemonClient, DaemonConfig, DaemonOwner, DaemonRuntime, DaemonStatus};
 pub use dht::{
     spawn_dht_worker, DhtClient, DhtCommand, DhtOwner, DhtRuntimeConfig, DhtRuntimeEvent,
 };

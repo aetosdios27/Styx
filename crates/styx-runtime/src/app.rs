@@ -51,6 +51,7 @@ pub struct AppRuntime {
     dht_announce_ready: HashSet<TorrentId>,
     dht_last_announce: HashMap<TorrentId, Instant>,
     lsd_targets: Vec<(TorrentId, styx_proto::InfoHashV1)>,
+    quiescing: bool,
 }
 
 #[derive(Debug)]
@@ -80,11 +81,26 @@ impl AppRuntime {
             dht_announce_ready: HashSet::new(),
             dht_last_announce: HashMap::new(),
             lsd_targets: Vec::new(),
+            quiescing: false,
         }
     }
 
     pub fn into_engine(self) -> RuntimeEngine {
         self.engine
+    }
+
+    pub(crate) async fn quiesce(&mut self) {
+        self.quiescing = true;
+        let handles = std::mem::take(&mut self.bg_handles);
+        for handle in handles.values() {
+            handle.abort();
+        }
+        for (_, handle) in handles {
+            let _ = handle.await;
+        }
+        // Reconcile completion/failure messages that won the race with abort
+        // before the daemon takes its final durable snapshot.
+        let _ = self.tick();
     }
 
     pub fn new_with_config(config: RuntimeConfig) -> Result<Self, RuntimeError> {
@@ -359,7 +375,7 @@ impl AppRuntime {
     }
 
     fn spawn_seed_worker(&mut self, id: TorrentId, plan: TorrentPlan) {
-        if self.bg_handles.contains_key(&id) {
+        if self.quiescing || self.bg_handles.contains_key(&id) {
             return;
         }
         let tx = self.bg_tx.clone();
@@ -407,6 +423,10 @@ impl PersistentAppRuntime {
     pub fn persist_now(&mut self) -> Result<(), RuntimeError> {
         let state = self.runtime.persistent_state();
         self.store.save(&state)
+    }
+
+    pub(crate) async fn quiesce(&mut self) {
+        self.runtime.quiesce().await;
     }
 
     #[must_use]
@@ -740,6 +760,7 @@ impl TorrentRuntime for AppRuntime {
             let snap = self.engine.snapshot();
             for tor in &snap.torrents {
                 if tor.status == TorrentStatus::Discovering
+                    && !self.quiescing
                     && !self.bg_handles.contains_key(&tor.id)
                 {
                     if let Some(plan) = self.pending_plans.get(&tor.id).cloned() {
