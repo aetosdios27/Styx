@@ -204,11 +204,13 @@ async fn ipc_socket_and_parent_are_owner_only() {
 
 #[cfg(unix)]
 fn daemon_config(root: &std::path::Path, socket: &std::path::Path) -> DaemonConfig {
+    let mut runtime_config = RuntimeConfig::default();
+    runtime_config.dht.bind = "127.0.0.1:0".parse().unwrap();
     DaemonConfig {
         state_dir: root.join("state"),
         socket_path: socket.to_path_buf(),
         tick_interval: Duration::from_millis(10),
-        runtime_config: RuntimeConfig::default(),
+        runtime_config,
     }
 }
 

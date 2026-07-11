@@ -281,11 +281,13 @@ async fn daemon_restart_can_serve_block_from_restored_completed_torrent() {
 }
 
 fn daemon_config(root: &std::path::Path) -> DaemonConfig {
+    let mut runtime_config = RuntimeConfig::default();
+    runtime_config.dht.bind = "127.0.0.1:0".parse().unwrap();
     DaemonConfig {
         state_dir: root.join("state"),
         socket_path: root.join("styx.sock"),
         tick_interval: Duration::from_millis(10),
-        runtime_config: RuntimeConfig::default(),
+        runtime_config,
     }
 }
 

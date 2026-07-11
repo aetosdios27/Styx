@@ -12,8 +12,8 @@ use styx_proto::{
     DEFAULT_MAX_PEER_FRAME_LEN,
 };
 use styx_runtime::{
-    resolve_magnet_from_exact_peers, spawn_dht_worker, AppRuntime, DhtRuntimeConfig, MagnetAdd,
-    MetadataFetchConfig, RuntimeConfig, RuntimeError,
+    resolve_magnet_from_exact_peers, spawn_session_supervisor, AppRuntime, DhtRuntimeConfig,
+    MagnetAdd, MetadataFetchConfig, RuntimeConfig, RuntimeError, ShutdownMode,
 };
 use tokio::net::{TcpListener, TcpStream};
 
@@ -246,17 +246,14 @@ async fn magnet_without_trackers_resolves_metadata_through_local_dht_and_downloa
         metadata_request_limit: 8,
         tick_interval: Duration::from_millis(5),
     };
-    let (events_tx, events_rx) = tokio::sync::mpsc::channel(64);
-    let (client, owner) = spawn_dht_worker(dht_config.clone(), events_tx)
-        .await
-        .unwrap();
-    let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
+    let config = RuntimeConfig {
         source_timeout: Duration::from_secs(1),
         dht: dht_config,
         ..RuntimeConfig::default()
-    })
-    .unwrap();
-    runtime.attach_dht_worker(client, events_rx).unwrap();
+    };
+    let (client, events, owner) = spawn_session_supervisor(config.clone()).await.unwrap();
+    let mut runtime = AppRuntime::new_with_config(config).unwrap();
+    runtime.attach_session(client, events).unwrap();
     let temp = tempfile::tempdir().unwrap();
 
     runtime
@@ -279,7 +276,7 @@ async fn magnet_without_trackers_resolves_metadata_through_local_dht_and_downloa
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    owner.shutdown().await.unwrap();
+    owner.shutdown(ShutdownMode::Clean).await.unwrap();
     dht_server.await.unwrap();
     metadata_server.await.unwrap();
     let snapshot = runtime.snapshot();
@@ -319,16 +316,13 @@ async fn magnet_resolution_times_out_without_hanging_runtime() {
         tick_interval: Duration::from_millis(5),
         ..DhtRuntimeConfig::default()
     };
-    let (events_tx, events_rx) = tokio::sync::mpsc::channel(64);
-    let (client, owner) = spawn_dht_worker(dht_config.clone(), events_tx)
-        .await
-        .unwrap();
-    let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
+    let config = RuntimeConfig {
         dht: dht_config,
         ..RuntimeConfig::default()
-    })
-    .unwrap();
-    runtime.attach_dht_worker(client, events_rx).unwrap();
+    };
+    let (client, events, owner) = spawn_session_supervisor(config.clone()).await.unwrap();
+    let mut runtime = AppRuntime::new_with_config(config).unwrap();
+    runtime.attach_session(client, events).unwrap();
     let temp = tempfile::tempdir().unwrap();
     runtime
         .apply(ControlCommand::AddMagnet {
@@ -347,7 +341,7 @@ async fn magnet_resolution_times_out_without_hanging_runtime() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
-    owner.shutdown().await.unwrap();
+    owner.shutdown(ShutdownMode::Clean).await.unwrap();
     assert_eq!(
         runtime.persistent_state().torrents[0].state,
         styx_runtime::PersistentTorrentState::Failed

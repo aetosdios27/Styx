@@ -1,5 +1,4 @@
 use std::{
-    num::NonZeroUsize,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -58,37 +57,13 @@ impl DaemonRuntime {
         }
         let store = PersistentStore::open(&config.state_dir)?;
         let mut runtime = PersistentAppRuntime::open(config.runtime_config.clone(), store).await?;
-        let dht_worker = if config.runtime_config.dht.enabled
-            && !config.runtime_config.dht.bootstrap_nodes.is_empty()
-        {
-            let (events_tx, events_rx) =
-                mpsc::channel(config.runtime_config.session.event_capacity);
-            let (client, owner) =
-                crate::spawn_dht_worker(config.runtime_config.dht.clone(), events_tx).await?;
-            runtime.runtime_mut().attach_dht_worker(client, events_rx)?;
-            Some(owner)
-        } else {
-            None
-        };
-        let (lsd_events_tx, lsd_events_rx) =
-            mpsc::channel(config.runtime_config.session.event_capacity);
-        let lsd_worker = crate::spawn_lsd_worker(
-            config.runtime_config.listen_port,
-            NonZeroUsize::new(config.runtime_config.session.command_capacity).ok_or(
-                RuntimeError::InvalidConfig("session command capacity must be greater than zero"),
-            )?,
-            lsd_events_tx,
-        );
-        let lsd_owner = lsd_worker
-            .map(|(client, owner)| {
-                runtime
-                    .runtime_mut()
-                    .attach_lsd_worker(client, lsd_events_rx)
-                    .map(|()| owner)
-            })
-            .transpose()?;
+        let (session, session_events, session_owner) =
+            crate::spawn_session_supervisor(config.runtime_config.clone()).await?;
+        runtime
+            .runtime_mut()
+            .attach_session(session, session_events)?;
         let (tx, rx) = mpsc::channel(64);
-        let join = tokio::spawn(run_daemon(config, runtime, rx, dht_worker, lsd_owner));
+        let join = tokio::spawn(run_daemon(config, runtime, rx, session_owner));
         Ok(DaemonHandle {
             tx,
             join: Arc::new(Mutex::new(Some(join))),
@@ -141,8 +116,7 @@ async fn run_daemon(
     config: DaemonConfig,
     mut runtime: PersistentAppRuntime,
     mut rx: mpsc::Receiver<DaemonRequest>,
-    dht_worker: Option<crate::DhtOwner>,
-    lsd_worker: Option<crate::LsdOwner>,
+    session_owner: crate::SessionOwner,
 ) {
     let started = Instant::now();
     let mut interval = tokio::time::interval(config.tick_interval);
@@ -169,12 +143,7 @@ async fn run_daemon(
             else => break,
         }
     }
-    if let Some(worker) = dht_worker {
-        let _ = worker.shutdown().await;
-    }
-    if let Some(worker) = lsd_worker {
-        let _ = worker.shutdown().await;
-    }
+    let _ = session_owner.shutdown(crate::ShutdownMode::Clean).await;
 }
 
 fn status_from_runtime(

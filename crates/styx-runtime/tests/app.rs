@@ -7,7 +7,9 @@ use styx_proto::{
     decode_handshake, encode, write_handshake, write_message, BencodeValue, ExtensionBits,
     Handshake, PeerId, PeerMessage, PEER_HANDSHAKE_LEN,
 };
-use styx_runtime::{AppRuntime, RuntimeConfig, RuntimeEngine};
+use styx_runtime::{
+    spawn_session_supervisor, AppRuntime, RuntimeConfig, RuntimeEngine, ShutdownMode,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -19,6 +21,20 @@ fn snapshot_converts_torrent_status_correctly() {
     let mut runtime = AppRuntime::new(engine);
     let app_snap = runtime.snapshot();
     assert_eq!(app_snap.totals.torrent_count, 0);
+}
+
+#[tokio::test]
+async fn attach_session_accepts_minimum_command_capacity() {
+    let mut config = RuntimeConfig::default();
+    config.session.command_capacity = 1;
+    config.dht.enabled = true;
+    config.listen_port = 1;
+    let (client, events, owner) = spawn_session_supervisor(config.clone()).await.unwrap();
+    let mut runtime = AppRuntime::new_with_config(config).unwrap();
+
+    runtime.attach_session(client, events).unwrap();
+
+    owner.shutdown(ShutdownMode::Clean).await.unwrap();
 }
 
 #[test]

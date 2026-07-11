@@ -36,6 +36,7 @@ pub struct SessionClient {
     commands: mpsc::Sender<SessionCommand>,
 }
 
+#[derive(Debug)]
 pub struct SessionEventStream {
     events: mpsc::Receiver<SessionEvent>,
     notices: mpsc::Receiver<SessionNotice>,
@@ -143,10 +144,6 @@ impl SessionEventStream {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "consumed by the Task 7 AppRuntime adapter migration"
-    )]
     pub(crate) fn try_recv_event(&mut self) -> Result<SessionEvent, mpsc::error::TryRecvError> {
         self.events.try_recv()
     }

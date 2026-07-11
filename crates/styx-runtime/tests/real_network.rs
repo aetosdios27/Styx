@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use styx_app::{ControlCommand, TorrentRuntime};
 use styx_runtime::{
-    run_full_v1_download, run_one_piece_smoke, spawn_dht_worker, AppRuntime, DhtRuntimeConfig,
-    DownloadRunConfig, RuntimeConfig, SmokeRunConfig,
+    run_full_v1_download, run_one_piece_smoke, spawn_session_supervisor, AppRuntime,
+    DhtRuntimeConfig, DownloadRunConfig, RuntimeConfig, ShutdownMode, SmokeRunConfig,
 };
 
 #[tokio::test]
@@ -75,15 +75,14 @@ async fn real_network_magnet_resolves_metadata_and_downloads_one_piece() {
         bootstrap_nodes: vec![bootstrap],
         ..DhtRuntimeConfig::default()
     };
-    let (events_tx, events_rx) = tokio::sync::mpsc::channel(64);
-    let (client, owner) = spawn_dht_worker(dht.clone(), events_tx).await.unwrap();
-    let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
+    let config = RuntimeConfig {
         dht,
         source_timeout: Duration::from_secs(30),
         ..RuntimeConfig::default()
-    })
-    .unwrap();
-    runtime.attach_dht_worker(client, events_rx).unwrap();
+    };
+    let (client, events, owner) = spawn_session_supervisor(config.clone()).await.unwrap();
+    let mut runtime = AppRuntime::new_with_config(config).unwrap();
+    runtime.attach_session(client, events).unwrap();
     runtime
         .apply(ControlCommand::AddMagnet {
             uri: magnet,
@@ -106,7 +105,7 @@ async fn real_network_magnet_resolves_metadata_and_downloads_one_piece() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    owner.shutdown().await.unwrap();
+    owner.shutdown(ShutdownMode::Clean).await.unwrap();
     assert!(
         downloaded,
         "magnet made no verified progress before timeout"

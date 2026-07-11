@@ -27,7 +27,7 @@ const MAX_LOG_LINES: usize = 1000;
 const DHT_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LsdWorkerState {
+enum SessionDeliveryState {
     Retain,
     Detach,
 }
@@ -45,13 +45,11 @@ pub struct AppRuntime {
     pending_magnets: HashMap<TorrentId, MagnetAdd>,
     pending_download_peers: HashMap<TorrentId, Vec<std::net::SocketAddr>>,
     persistent_torrents: BTreeMap<TorrentId, PersistentTorrent>,
-    dht_worker: Option<crate::DhtClient>,
-    dht_events: Option<mpsc::Receiver<crate::DhtRuntimeEvent>>,
+    session: Option<crate::SessionClient>,
+    session_events: Option<crate::SessionEventStream>,
     dht_bootstrapped: bool,
     dht_announce_ready: HashSet<TorrentId>,
     dht_last_announce: HashMap<TorrentId, Instant>,
-    lsd_worker: Option<crate::LsdClient>,
-    lsd_events: Option<mpsc::Receiver<crate::LsdRuntimeEvent>>,
     lsd_targets: Vec<(TorrentId, styx_proto::InfoHashV1)>,
 }
 
@@ -76,13 +74,11 @@ impl AppRuntime {
             pending_magnets: HashMap::new(),
             pending_download_peers: HashMap::new(),
             persistent_torrents: BTreeMap::new(),
-            dht_worker: None,
-            dht_events: None,
+            session: None,
+            session_events: None,
             dht_bootstrapped: false,
             dht_announce_ready: HashSet::new(),
             dht_last_announce: HashMap::new(),
-            lsd_worker: None,
-            lsd_events: None,
             lsd_targets: Vec::new(),
         }
     }
@@ -186,37 +182,23 @@ impl AppRuntime {
         }
     }
 
-    pub fn attach_dht_worker(
+    pub fn attach_session(
         &mut self,
-        worker: crate::DhtClient,
-        events: mpsc::Receiver<crate::DhtRuntimeEvent>,
-    ) -> Result<(), RuntimeError> {
-        worker.try_send(crate::DhtCommand::Bootstrap)?;
-        self.dht_worker = Some(worker);
-        self.dht_events = Some(events);
-        Ok(())
-    }
-
-    pub fn attach_lsd_worker(
-        &mut self,
-        worker: crate::LsdClient,
-        events: mpsc::Receiver<crate::LsdRuntimeEvent>,
+        client: crate::SessionClient,
+        events: crate::SessionEventStream,
     ) -> Result<(), RuntimeError> {
         let targets = self.engine.lsd_announce_targets();
-        worker
-            .try_send(crate::LsdCommand::Update {
-                torrents: targets.clone(),
-            })
-            .map_err(|error| match error {
-                crate::LsdError::CommandBackpressure => RuntimeError::Backpressure {
-                    stage: "lsd_command",
-                },
-                crate::LsdError::WorkerClosed => RuntimeError::Cancelled,
-                _ => unreachable!("LSD command delivery has only channel errors"),
-            })?;
-        self.lsd_worker = Some(worker);
-        self.lsd_events = Some(events);
-        self.lsd_targets = targets;
+        if self.engine.config().dht.enabled {
+            client.bootstrap_dht()?;
+        }
+        self.session = Some(client);
+        self.session_events = Some(events);
+        // LSD synchronization is deliberately deferred to `tick`: bootstrap and
+        // LSD share one bounded session queue, whose minimum valid capacity is one.
+        self.lsd_targets.clear();
+        if targets.is_empty() {
+            self.lsd_targets = targets;
+        }
         Ok(())
     }
 
@@ -234,16 +216,13 @@ impl AppRuntime {
         id: TorrentId,
         info_hash: styx_dht::InfoHash,
     ) -> Result<(), RuntimeError> {
-        let Some(worker) = &self.dht_worker else {
+        let Some(session) = &self.session else {
             return Ok(());
         };
         if !self.dht_bootstrapped {
             return Ok(());
         }
-        worker.try_send(crate::DhtCommand::GetPeers {
-            torrent: id,
-            info_hash,
-        })
+        session.get_peers(id, info_hash)
     }
 
     fn announce_dht_if_ready(&mut self, id: TorrentId) {
@@ -259,20 +238,22 @@ impl AppRuntime {
         let Some(info_hash) = self.engine.dht_announce_target(id) else {
             return;
         };
-        let Some(worker) = &self.dht_worker else {
+        let Some(session) = &self.session else {
             return;
         };
-        if worker
-            .try_send(crate::DhtCommand::AnnouncePeer {
-                torrent: id,
-                info_hash,
-                port: self.engine.config().listen_port,
-                implied_port: false,
-            })
-            .is_ok()
-        {
-            self.dht_last_announce.insert(id, Instant::now());
+        match session.announce_peer(id, info_hash, self.engine.config().listen_port, false) {
+            Ok(()) => {
+                self.dht_last_announce.insert(id, Instant::now());
+            }
+            Err(error) => self.push_session_log(LogLevel::Error, error.to_string()),
         }
+    }
+
+    fn push_session_log(&mut self, level: LogLevel, message: String) {
+        if self.logs.len() >= MAX_LOG_LINES {
+            self.logs.pop_front();
+        }
+        self.logs.push_back(LogLine { level, message });
     }
 
     fn apply_add(
@@ -532,21 +513,48 @@ impl TorrentRuntime for AppRuntime {
     }
 
     fn tick(&mut self) -> Vec<AppEvent> {
-        let mut dht_events = Vec::new();
-        if let Some(events) = &mut self.dht_events {
-            while let Ok(event) = events.try_recv() {
-                dht_events.push(event);
+        let mut session_events = Vec::new();
+        if let Some(events) = &mut self.session_events {
+            while let Ok(event) = events.try_recv_event() {
+                session_events.push(event);
             }
         }
-        for event in dht_events {
+        for event in session_events {
+            let event = match event {
+                crate::supervision::SessionEvent::Dht(event) => event,
+                crate::supervision::SessionEvent::Lsd(crate::LsdRuntimeEvent::PeerDiscovered {
+                    torrent,
+                    peer,
+                }) => {
+                    self.engine.add_lsd_peer(torrent, peer);
+                    continue;
+                }
+                crate::supervision::SessionEvent::SharedWorkerFailed { worker, reason } => {
+                    self.push_session_log(
+                        LogLevel::Error,
+                        format!("shared {worker:?} worker failed: {reason:?}"),
+                    );
+                    continue;
+                }
+            };
             match event {
                 crate::DhtRuntimeEvent::Bootstrapped { .. } => {
                     self.dht_bootstrapped = true;
                     for (id, add) in self.pending_magnets.clone() {
-                        let _ = self.request_dht_peers(id, &add);
+                        if let Err(error) = self.request_dht_peers(id, &add) {
+                            self.engine.push_event(RuntimeEvent::TaskFailed {
+                                torrent: id,
+                                reason: error.to_string(),
+                            });
+                        }
                     }
                     for (id, info_hash) in self.engine.dht_announce_targets() {
-                        let _ = self.request_dht_lookup(id, info_hash);
+                        if let Err(error) = self.request_dht_lookup(id, info_hash) {
+                            self.engine.push_event(RuntimeEvent::TaskFailed {
+                                torrent: id,
+                                reason: error.to_string(),
+                            });
+                        }
                     }
                 }
                 crate::DhtRuntimeEvent::PeersDiscovered { torrent, peers } => {
@@ -563,7 +571,12 @@ impl TorrentRuntime for AppRuntime {
                             self.bg_handles.insert(torrent, handle);
                         }
                     } else {
-                        let _ = self.engine.add_dht_peers(torrent, peers);
+                        if let Err(error) = self.engine.add_dht_peers(torrent, peers) {
+                            self.engine.push_event(RuntimeEvent::TaskFailed {
+                                torrent,
+                                reason: error.to_string(),
+                            });
+                        }
                         self.announce_dht_if_ready(torrent);
                     }
                 }
@@ -591,25 +604,25 @@ impl TorrentRuntime for AppRuntime {
         for (id, _) in self.engine.dht_announce_targets() {
             self.announce_dht_if_ready(id);
         }
-        if let Some(events) = &mut self.lsd_events {
-            while let Ok(crate::LsdRuntimeEvent::PeerDiscovered { torrent, peer }) =
-                events.try_recv()
-            {
-                let _ = self.engine.add_lsd_peer(torrent, peer);
-            }
-        }
         let lsd_targets = self.engine.lsd_announce_targets();
         if lsd_targets != self.lsd_targets {
-            if let Some(delivery) = self.lsd_worker.as_ref().map(|worker| {
-                worker.try_send(crate::LsdCommand::Update {
-                    torrents: lsd_targets.clone(),
-                })
-            }) {
-                if reconcile_lsd_delivery(&mut self.lsd_targets, lsd_targets, delivery)
-                    == LsdWorkerState::Detach
-                {
-                    self.lsd_worker = None;
-                    self.lsd_events = None;
+            if let Some(delivery) = self
+                .session
+                .as_ref()
+                .map(|session| session.update_lsd(lsd_targets.clone()))
+            {
+                match delivery {
+                    Ok(()) => self.lsd_targets = lsd_targets,
+                    Err(error) => {
+                        let message = error.to_string();
+                        let state =
+                            reconcile_lsd_delivery(&mut self.lsd_targets, lsd_targets, Err(error));
+                        self.push_session_log(LogLevel::Error, message);
+                        if state == SessionDeliveryState::Detach {
+                            self.session = None;
+                            self.session_events = None;
+                        }
+                    }
                 }
             }
         }
@@ -701,10 +714,14 @@ impl TorrentRuntime for AppRuntime {
                     try_dht,
                 } => {
                     self.bg_handles.remove(&id);
-                    if try_dht && self.dht_worker.is_some() {
+                    if try_dht && self.session.is_some() {
                         if let Some(add) = self.pending_magnets.get(&id) {
-                            let _ = self.request_dht_peers(id, add);
-                            continue;
+                            match self.request_dht_peers(id, add) {
+                                Ok(()) => continue,
+                                Err(error) => {
+                                    self.push_session_log(LogLevel::Error, error.to_string());
+                                }
+                            }
                         }
                     }
                     if let Some(torrent) = self.persistent_torrents.get_mut(&id) {
@@ -792,16 +809,15 @@ impl TorrentRuntime for AppRuntime {
 fn reconcile_lsd_delivery(
     acknowledged: &mut Vec<(TorrentId, styx_proto::InfoHashV1)>,
     desired: Vec<(TorrentId, styx_proto::InfoHashV1)>,
-    delivery: Result<(), crate::LsdError>,
-) -> LsdWorkerState {
+    delivery: Result<(), RuntimeError>,
+) -> SessionDeliveryState {
     match delivery {
         Ok(()) => {
             *acknowledged = desired;
-            LsdWorkerState::Retain
+            SessionDeliveryState::Retain
         }
-        Err(crate::LsdError::CommandBackpressure) => LsdWorkerState::Retain,
-        Err(crate::LsdError::WorkerClosed) => LsdWorkerState::Detach,
-        Err(_) => unreachable!("LSD command delivery has only channel errors"),
+        Err(RuntimeError::Backpressure { .. }) => SessionDeliveryState::Retain,
+        Err(_) => SessionDeliveryState::Detach,
     }
 }
 
@@ -957,10 +973,12 @@ mod tests {
         let state = reconcile_lsd_delivery(
             &mut acknowledged,
             Vec::new(),
-            Err(crate::LsdError::CommandBackpressure),
+            Err(RuntimeError::Backpressure {
+                stage: "session_command",
+            }),
         );
 
-        assert_eq!(state, LsdWorkerState::Retain);
+        assert_eq!(state, SessionDeliveryState::Retain);
         assert_eq!(acknowledged, vec![stale_public_target]);
     }
 
@@ -971,7 +989,7 @@ mod tests {
 
         let state = reconcile_lsd_delivery(&mut acknowledged, desired.clone(), Ok(()));
 
-        assert_eq!(state, LsdWorkerState::Retain);
+        assert_eq!(state, SessionDeliveryState::Retain);
         assert_eq!(acknowledged, desired);
     }
 
@@ -983,27 +1001,10 @@ mod tests {
         let state = reconcile_lsd_delivery(
             &mut acknowledged,
             vec![lsd_target(2)],
-            Err(crate::LsdError::WorkerClosed),
+            Err(RuntimeError::Cancelled),
         );
 
-        assert_eq!(state, LsdWorkerState::Detach);
+        assert_eq!(state, SessionDeliveryState::Detach);
         assert_eq!(acknowledged, previous);
-    }
-
-    #[test]
-    fn attaching_replacement_lsd_worker_synchronizes_its_own_generation() {
-        let mut runtime = AppRuntime::new_with_config(RuntimeConfig::default()).unwrap();
-        runtime.lsd_targets = vec![lsd_target(1)];
-        let (command_tx, mut command_rx) = mpsc::channel(1);
-        let client = crate::LsdClient::from_sender(command_tx);
-        let (_events_tx, events_rx) = mpsc::channel(1);
-
-        runtime.attach_lsd_worker(client, events_rx).unwrap();
-
-        assert!(runtime.lsd_targets.is_empty());
-        assert!(matches!(
-            command_rx.try_recv(),
-            Ok(crate::LsdCommand::Update { torrents }) if torrents.is_empty()
-        ));
     }
 }

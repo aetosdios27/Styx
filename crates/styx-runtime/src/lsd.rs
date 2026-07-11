@@ -86,11 +86,6 @@ impl LsdClient {
             mpsc::error::TrySendError::Closed(_) => LsdError::WorkerClosed,
         })
     }
-
-    #[cfg(test)]
-    pub(crate) fn from_sender(tx: mpsc::Sender<LsdCommand>) -> Self {
-        Self { tx }
-    }
 }
 
 impl LsdOwner {

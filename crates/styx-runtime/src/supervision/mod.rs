@@ -2,6 +2,7 @@ mod supervisor;
 mod task_registry;
 mod types;
 
+pub(crate) use supervisor::SessionEvent;
 pub use supervisor::{
     spawn_session_supervisor, SessionClient, SessionEventStream, SessionNotice, SessionOwner,
 };
