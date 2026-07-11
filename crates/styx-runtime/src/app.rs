@@ -261,7 +261,7 @@ impl AppRuntime {
             Ok(()) => {
                 self.dht_last_announce.insert(id, Instant::now());
             }
-            Err(error) => self.push_session_log(LogLevel::Error, error.to_string()),
+            Err(_) => self.push_session_log(LogLevel::Error, "session command failed".into()),
         }
     }
 
@@ -634,10 +634,9 @@ impl TorrentRuntime for AppRuntime {
                 match delivery {
                     Ok(()) => self.lsd_targets = lsd_targets,
                     Err(error) => {
-                        let message = error.to_string();
                         let state =
                             reconcile_lsd_delivery(&mut self.lsd_targets, lsd_targets, Err(error));
-                        self.push_session_log(LogLevel::Error, message);
+                        self.push_session_log(LogLevel::Error, "session command failed".into());
                         if state == SessionDeliveryState::Detach {
                             self.session = None;
                             self.session_events = None;
@@ -738,8 +737,11 @@ impl TorrentRuntime for AppRuntime {
                         if let Some(add) = self.pending_magnets.get(&id) {
                             match self.request_dht_peers(id, add) {
                                 Ok(()) => continue,
-                                Err(error) => {
-                                    self.push_session_log(LogLevel::Error, error.to_string());
+                                Err(_) => {
+                                    self.push_session_log(
+                                        LogLevel::Error,
+                                        "session command failed".into(),
+                                    );
                                 }
                             }
                         }
@@ -888,67 +890,53 @@ fn map_to_app_event(event: &RuntimeEvent, snap: &RuntimeSnapshot) -> Option<AppE
 
 fn map_to_log_line(event: &RuntimeEvent) -> Option<LogLine> {
     match event {
-        RuntimeEvent::TorrentAdded { torrent } => Some(LogLine {
+        RuntimeEvent::TorrentAdded { .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!("torrent {:?} added", torrent),
+            message: "torrent added".into(),
         }),
-        RuntimeEvent::TorrentRemoved { torrent } => Some(LogLine {
+        RuntimeEvent::TorrentRemoved { .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!("torrent {:?} removed", torrent),
+            message: "torrent removed".into(),
         }),
-        RuntimeEvent::StateChanged { torrent, from, to } => Some(LogLine {
+        RuntimeEvent::StateChanged { from, to, .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!("torrent {torrent:?}: {from:?} → {to:?}"),
+            message: format!("torrent state changed: {from:?} -> {to:?}"),
         }),
-        RuntimeEvent::SourceFailed {
-            torrent, source, ..
-        } => Some(LogLine {
+        RuntimeEvent::SourceFailed { .. } => Some(LogLine {
             level: LogLevel::Warn,
-            message: format!("source {source} failed for torrent {torrent:?}"),
+            message: "torrent source failed".into(),
         }),
-        RuntimeEvent::TaskFailed { torrent, reason } => Some(LogLine {
+        RuntimeEvent::TaskFailed { .. } => Some(LogLine {
             level: LogLevel::Error,
-            message: format!("torrent {torrent:?} failed: {reason}"),
+            message: "torrent task failed".into(),
         }),
-        RuntimeEvent::PieceVerified {
-            torrent,
-            piece,
-            bytes,
-        } => Some(LogLine {
+        RuntimeEvent::PieceVerified { .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!("torrent {torrent:?} piece {piece} verified ({bytes} bytes)"),
+            message: "torrent piece verified".into(),
         }),
-        RuntimeEvent::PeerConnected { torrent, addr } => Some(LogLine {
+        RuntimeEvent::PeerConnected { .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!("peer {addr} connected for torrent {torrent:?}"),
+            message: "torrent peer connected".into(),
         }),
-        RuntimeEvent::PeerDisconnected { torrent, addr } => Some(LogLine {
+        RuntimeEvent::PeerDisconnected { .. } => Some(LogLine {
             level: LogLevel::Warn,
-            message: format!("peer {addr} disconnected for torrent {torrent:?}"),
+            message: "torrent peer disconnected".into(),
         }),
-        RuntimeEvent::DhtPeersDiscovered { torrent, peers } => Some(LogLine {
+        RuntimeEvent::DhtPeersDiscovered { peers, .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!("DHT discovered {peers} peers for torrent {torrent:?}"),
+            message: format!("DHT discovered {peers} peers"),
         }),
-        RuntimeEvent::DhtAnnounced { torrent, nodes } => Some(LogLine {
+        RuntimeEvent::DhtAnnounced { nodes, .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!("announced torrent {torrent:?} to {nodes} DHT nodes"),
+            message: format!("torrent announced to {nodes} DHT nodes"),
         }),
-        RuntimeEvent::BlockUploaded {
-            torrent,
-            peer,
-            piece,
-            bytes,
-            ..
-        } => Some(LogLine {
+        RuntimeEvent::BlockUploaded { bytes, .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!(
-                "uploaded {bytes} bytes from piece {piece} to peer {peer} for torrent {torrent:?}"
-            ),
+            message: format!("uploaded {bytes} verified bytes"),
         }),
-        RuntimeEvent::TaskCompleted { torrent } => Some(LogLine {
+        RuntimeEvent::TaskCompleted { .. } => Some(LogLine {
             level: LogLevel::Info,
-            message: format!("torrent {torrent:?} completed"),
+            message: "torrent task completed".into(),
         }),
         _ => None,
     }
@@ -984,6 +972,19 @@ mod tests {
     fn lsd_target(byte: u8) -> (TorrentId, styx_proto::InfoHashV1) {
         let hash = styx_proto::InfoHashV1::new([byte; 20]);
         (TorrentId::new(hash), hash)
+    }
+
+    #[test]
+    fn default_logs_redact_torrent_peer_source_and_failure_identifiers() {
+        let torrent = TorrentId::new(styx_proto::InfoHashV1::new([0xab; 20]));
+        let log = map_to_log_line(&RuntimeEvent::SourceFailed {
+            torrent,
+            source: "https://secret.example/private-token".into(),
+            reason: "peer 203.0.113.7 leaked a secret".into(),
+        })
+        .unwrap();
+
+        assert_eq!(log.message, "torrent source failed");
     }
 
     #[test]

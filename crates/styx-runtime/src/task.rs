@@ -171,6 +171,9 @@ impl TorrentTask {
     }
 
     pub fn add_dht_peers(&mut self, peers: impl IntoIterator<Item = SocketAddr>) -> usize {
+        if !DiscoveryPolicy::from_metainfo(&self.plan.metainfo).dht_allowed() {
+            return 0;
+        }
         let mut added = 0;
         for peer in peers {
             if peer.port() == 0 || peer.ip().is_unspecified() {

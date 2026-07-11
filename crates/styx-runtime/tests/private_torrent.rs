@@ -46,6 +46,24 @@ fn private_torrent_is_never_a_dht_announce_target() {
     assert!(engine.lsd_announce_targets().is_empty());
 }
 
+#[test]
+fn delayed_dht_peers_cannot_enter_private_torrent_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let metainfo = decode_torrent(&private_torrent_bytes()).unwrap();
+    let plan = TorrentPlan::from_metainfo_decentralized(metainfo, temp.path()).unwrap();
+    let id = plan.id;
+    let mut engine = RuntimeEngine::new(RuntimeConfig::default()).unwrap();
+    engine
+        .apply(RuntimeCommand::AddPlan(Box::new(plan)))
+        .unwrap();
+
+    let added = engine
+        .add_dht_peers(id, vec!["127.0.0.1:6881".parse().unwrap()])
+        .unwrap();
+
+    assert_eq!(added, 0);
+}
+
 fn private_torrent_bytes() -> Vec<u8> {
     let mut info = BTreeMap::new();
     info.insert(
