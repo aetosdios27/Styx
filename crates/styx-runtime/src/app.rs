@@ -46,12 +46,12 @@ pub struct AppRuntime {
     pending_download_peers: HashMap<TorrentId, Vec<std::net::SocketAddr>>,
     persistent_torrents: BTreeMap<TorrentId, PersistentTorrent>,
     dht_worker: Option<crate::DhtClient>,
-    dht_events: Option<mpsc::UnboundedReceiver<crate::DhtRuntimeEvent>>,
+    dht_events: Option<mpsc::Receiver<crate::DhtRuntimeEvent>>,
     dht_bootstrapped: bool,
     dht_announce_ready: HashSet<TorrentId>,
     dht_last_announce: HashMap<TorrentId, Instant>,
     lsd_worker: Option<crate::LsdClient>,
-    lsd_events: Option<mpsc::UnboundedReceiver<crate::LsdRuntimeEvent>>,
+    lsd_events: Option<mpsc::Receiver<crate::LsdRuntimeEvent>>,
     lsd_targets: Vec<(TorrentId, styx_proto::InfoHashV1)>,
 }
 
@@ -189,7 +189,7 @@ impl AppRuntime {
     pub fn attach_dht_worker(
         &mut self,
         worker: crate::DhtClient,
-        events: mpsc::UnboundedReceiver<crate::DhtRuntimeEvent>,
+        events: mpsc::Receiver<crate::DhtRuntimeEvent>,
     ) -> Result<(), RuntimeError> {
         worker.try_send(crate::DhtCommand::Bootstrap)?;
         self.dht_worker = Some(worker);
@@ -200,7 +200,7 @@ impl AppRuntime {
     pub fn attach_lsd_worker(
         &mut self,
         worker: crate::LsdClient,
-        events: mpsc::UnboundedReceiver<crate::LsdRuntimeEvent>,
+        events: mpsc::Receiver<crate::LsdRuntimeEvent>,
     ) -> Result<(), RuntimeError> {
         let targets = self.engine.lsd_announce_targets();
         worker
@@ -996,7 +996,7 @@ mod tests {
         runtime.lsd_targets = vec![lsd_target(1)];
         let (command_tx, mut command_rx) = mpsc::channel(1);
         let client = crate::LsdClient::from_sender(command_tx);
-        let (_events_tx, events_rx) = mpsc::unbounded_channel();
+        let (_events_tx, events_rx) = mpsc::channel(1);
 
         runtime.attach_lsd_worker(client, events_rx).unwrap();
 

@@ -51,6 +51,8 @@ pub struct ShutdownReport {
     pub mode: ShutdownMode,
     pub elapsed: Duration,
     pub exits: BTreeMap<TaskKind, Vec<TaskExit>>,
+    pub capability_failures: BTreeMap<SharedWorkerKind, Vec<FailureReasonCode>>,
+    pub session_failures: Vec<FailureReasonCode>,
     pub persistence: PersistenceOutcome,
 }
 
@@ -61,6 +63,8 @@ impl ShutdownReport {
             mode,
             elapsed,
             exits: BTreeMap::new(),
+            capability_failures: BTreeMap::new(),
+            session_failures: Vec::new(),
             persistence: PersistenceOutcome::NotAttempted,
         }
     }

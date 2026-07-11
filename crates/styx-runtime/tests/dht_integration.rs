@@ -44,7 +44,7 @@ fn dht_config_rejects_zero_command_capacity() {
 async fn dht_worker_bootstrap_emits_bootstrapped_after_local_responder() {
     let remote = DhtSocket::bind(localhost_ephemeral()).await.unwrap();
     let remote_addr = remote.local_addr().unwrap();
-    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(64);
     let (client, owner) = spawn_dht_worker(test_dht_config(remote_addr), events_tx)
         .await
         .unwrap();
@@ -63,7 +63,7 @@ async fn dht_worker_bootstrap_emits_bootstrapped_after_local_responder() {
 
 #[tokio::test]
 async fn dht_worker_shutdown_drops_socket_without_hanging() {
-    let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, _events_rx) = tokio::sync::mpsc::channel(64);
     let config = DhtRuntimeConfig {
         bootstrap_nodes: Vec::new(),
         ..test_dht_config(localhost_ephemeral())
@@ -79,7 +79,7 @@ async fn dht_worker_shutdown_drops_socket_without_hanging() {
 
 #[tokio::test]
 async fn dht_owner_into_task_preserves_cooperative_registry_shutdown() {
-    let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, _events_rx) = tokio::sync::mpsc::channel(64);
     let config = DhtRuntimeConfig {
         bootstrap_nodes: Vec::new(),
         ..test_dht_config(localhost_ephemeral())
@@ -103,7 +103,7 @@ async fn dht_owner_into_task_preserves_cooperative_registry_shutdown() {
 
 #[tokio::test]
 async fn dropping_dht_owner_aborts_live_worker_and_closes_clients() {
-    let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, _events_rx) = tokio::sync::mpsc::channel(64);
     let config = DhtRuntimeConfig {
         bootstrap_nodes: Vec::new(),
         ..test_dht_config(localhost_ephemeral())
@@ -130,7 +130,7 @@ async fn dropping_dht_owner_aborts_live_worker_and_closes_clients() {
 async fn dht_worker_reports_lookup_exhausted_after_timeout() {
     let remote = DhtSocket::bind(localhost_ephemeral()).await.unwrap();
     let remote_addr = remote.local_addr().unwrap();
-    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(64);
     let (client, owner) = spawn_dht_worker(test_dht_config(remote_addr), events_tx)
         .await
         .unwrap();
@@ -159,7 +159,7 @@ async fn dht_worker_reports_lookup_exhausted_after_timeout() {
 async fn dht_announce_uses_prior_token_and_configured_port() {
     let remote = DhtSocket::bind(localhost_ephemeral()).await.unwrap();
     let remote_addr = remote.local_addr().unwrap();
-    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(64);
     let (client, owner) = spawn_dht_worker(test_dht_config(remote_addr), events_tx)
         .await
         .unwrap();
@@ -240,7 +240,7 @@ async fn dht_announce_uses_prior_token_and_configured_port() {
 async fn dht_announce_does_not_run_without_token() {
     let remote = DhtSocket::bind(localhost_ephemeral()).await.unwrap();
     let remote_addr = remote.local_addr().unwrap();
-    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(64);
     let (client, owner) = spawn_dht_worker(test_dht_config(remote_addr), events_tx)
         .await
         .unwrap();
@@ -305,7 +305,7 @@ async fn respond_to_ping(socket: &DhtSocket, id: NodeId) {
         .unwrap();
 }
 
-async fn wait_for_bootstrap(events_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DhtRuntimeEvent>) {
+async fn wait_for_bootstrap(events_rx: &mut tokio::sync::mpsc::Receiver<DhtRuntimeEvent>) {
     loop {
         let event = timeout(Duration::from_secs(1), events_rx.recv())
             .await
@@ -318,7 +318,7 @@ async fn wait_for_bootstrap(events_rx: &mut tokio::sync::mpsc::UnboundedReceiver
 }
 
 async fn wait_for_lookup_exhausted(
-    events_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DhtRuntimeEvent>,
+    events_rx: &mut tokio::sync::mpsc::Receiver<DhtRuntimeEvent>,
 ) -> DhtRuntimeEvent {
     loop {
         let event = events_rx.recv().await.unwrap();

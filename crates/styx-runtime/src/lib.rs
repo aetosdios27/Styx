@@ -67,7 +67,8 @@ pub use source::{
     SourceState, SourceTable,
 };
 pub use supervision::{
-    FailureReasonCode, OwnedTask, PersistenceOutcome, SharedWorkerKind, ShutdownMode,
+    spawn_session_supervisor, FailureReasonCode, OwnedTask, PersistenceOutcome, SessionClient,
+    SessionEventStream, SessionNotice, SessionOwner, SharedWorkerKind, ShutdownMode,
     ShutdownReport, TaskExit, TaskKind, TaskRegistry,
 };
 pub use task::TorrentTask;

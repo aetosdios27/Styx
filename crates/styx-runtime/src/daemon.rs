@@ -61,7 +61,8 @@ impl DaemonRuntime {
         let dht_worker = if config.runtime_config.dht.enabled
             && !config.runtime_config.dht.bootstrap_nodes.is_empty()
         {
-            let (events_tx, events_rx) = mpsc::unbounded_channel();
+            let (events_tx, events_rx) =
+                mpsc::channel(config.runtime_config.session.event_capacity);
             let (client, owner) =
                 crate::spawn_dht_worker(config.runtime_config.dht.clone(), events_tx).await?;
             runtime.runtime_mut().attach_dht_worker(client, events_rx)?;
@@ -69,7 +70,8 @@ impl DaemonRuntime {
         } else {
             None
         };
-        let (lsd_events_tx, lsd_events_rx) = mpsc::unbounded_channel();
+        let (lsd_events_tx, lsd_events_rx) =
+            mpsc::channel(config.runtime_config.session.event_capacity);
         let lsd_worker = crate::spawn_lsd_worker(
             config.runtime_config.listen_port,
             NonZeroUsize::new(config.runtime_config.session.command_capacity).ok_or(
@@ -171,7 +173,7 @@ async fn run_daemon(
         let _ = worker.shutdown().await;
     }
     if let Some(worker) = lsd_worker {
-        worker.shutdown().await;
+        let _ = worker.shutdown().await;
     }
 }
 

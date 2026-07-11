@@ -14,6 +14,7 @@ pub const LSD_IPV4_MULTICAST: &str = "239.192.152.143:6771";
 pub const LSD_IPV6_MULTICAST: &str = "[ff15::efc0:988f]:6771";
 pub const MAX_LSD_PACKET_BYTES: usize = 1400;
 const LSD_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const DIRECT_LSD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LsdAnnounce {
@@ -48,6 +49,8 @@ pub enum LsdError {
     WorkerClosed,
     #[error("LSD worker command queue is full")]
     CommandBackpressure,
+    #[error("LSD worker shutdown timed out")]
+    ShutdownTimeout,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,14 +94,22 @@ impl LsdClient {
 }
 
 impl LsdOwner {
-    pub async fn shutdown(self) {
+    pub async fn shutdown(self) -> Result<(), LsdError> {
         let mut owner = self;
         if let Some(shutdown) = owner.shutdown.take() {
             let _ = shutdown.send(());
         }
-        if let Some(join) = owner.join.take() {
-            let _ = join.await;
+        if let Some(mut join) = owner.join.take() {
+            match tokio::time::timeout(DIRECT_LSD_SHUTDOWN_TIMEOUT, &mut join).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => return Err(LsdError::WorkerClosed),
+                Err(_) => {
+                    join.abort();
+                    return Err(LsdError::ShutdownTimeout);
+                }
+            }
         }
+        Ok(())
     }
 
     pub fn into_task(mut self) -> OwnedTask {
@@ -125,7 +136,7 @@ impl Drop for LsdOwner {
 pub fn spawn_lsd_worker(
     listen_port: u16,
     command_capacity: NonZeroUsize,
-    events: mpsc::UnboundedSender<LsdRuntimeEvent>,
+    events: mpsc::Sender<LsdRuntimeEvent>,
 ) -> Option<(LsdClient, LsdOwner)> {
     if listen_port == 0 {
         return None;
@@ -154,7 +165,7 @@ pub fn spawn_lsd_worker(
 async fn run_lsd_worker(
     socket: tokio::net::UdpSocket,
     listen_port: u16,
-    events: mpsc::UnboundedSender<LsdRuntimeEvent>,
+    events: mpsc::Sender<LsdRuntimeEvent>,
     mut commands: mpsc::Receiver<LsdCommand>,
     mut shutdown: oneshot::Receiver<()>,
 ) {
@@ -196,7 +207,7 @@ async fn run_lsd_worker(
                             let _ = events.send(LsdRuntimeEvent::PeerDiscovered {
                                 torrent: *torrent,
                                 peer: discovery.peer,
-                            });
+                            }).await;
                         }
                     }
                 }
@@ -440,5 +451,36 @@ mod tests {
         })
         .await
         .expect("owner drop must abort the LSD worker and close clients");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lsd_owner_shutdown_is_bounded_when_event_delivery_is_stalled() {
+        let (events, _receiver) = mpsc::channel(1);
+        events
+            .try_send(LsdRuntimeEvent::PeerDiscovered {
+                torrent: TorrentId::new(InfoHashV1::new([1; 20])),
+                peer: "127.0.0.1:6881".parse().unwrap(),
+            })
+            .unwrap();
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel();
+        let join = tokio::spawn(async move {
+            let _ = events
+                .send(LsdRuntimeEvent::PeerDiscovered {
+                    torrent: TorrentId::new(InfoHashV1::new([2; 20])),
+                    peer: "127.0.0.1:6882".parse().unwrap(),
+                })
+                .await;
+        });
+        let owner = LsdOwner {
+            shutdown: Some(shutdown_tx),
+            join: Some(join),
+        };
+        let shutdown = tokio::spawn(owner.shutdown());
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+
+        let result = shutdown.await.unwrap();
+
+        assert_eq!(result, Err(LsdError::ShutdownTimeout));
     }
 }

@@ -75,7 +75,7 @@ async fn real_network_magnet_resolves_metadata_and_downloads_one_piece() {
         bootstrap_nodes: vec![bootstrap],
         ..DhtRuntimeConfig::default()
     };
-    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, events_rx) = tokio::sync::mpsc::channel(64);
     let (client, owner) = spawn_dht_worker(dht.clone(), events_tx).await.unwrap();
     let mut runtime = AppRuntime::new_with_config(RuntimeConfig {
         dht,

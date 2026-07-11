@@ -246,7 +246,7 @@ async fn magnet_without_trackers_resolves_metadata_through_local_dht_and_downloa
         metadata_request_limit: 8,
         tick_interval: Duration::from_millis(5),
     };
-    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, events_rx) = tokio::sync::mpsc::channel(64);
     let (client, owner) = spawn_dht_worker(dht_config.clone(), events_tx)
         .await
         .unwrap();
@@ -319,7 +319,7 @@ async fn magnet_resolution_times_out_without_hanging_runtime() {
         tick_interval: Duration::from_millis(5),
         ..DhtRuntimeConfig::default()
     };
-    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events_tx, events_rx) = tokio::sync::mpsc::channel(64);
     let (client, owner) = spawn_dht_worker(dht_config.clone(), events_tx)
         .await
         .unwrap();

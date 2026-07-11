@@ -64,6 +64,30 @@ impl TaskRegistry {
         self.tasks.is_empty()
     }
 
+    pub(crate) async fn drain_finished(&mut self) -> BTreeMap<TaskKind, Vec<TaskExit>> {
+        let kinds = self.tasks.keys().copied().collect::<Vec<_>>();
+        let mut exits = BTreeMap::new();
+        for kind in kinds {
+            let Some(tasks) = self.tasks.get_mut(&kind) else {
+                continue;
+            };
+            let mut index = 0;
+            while index < tasks.len() {
+                if tasks[index].handle.is_finished() {
+                    let mut task = tasks.remove(index);
+                    let result = (&mut task.handle).await;
+                    push_exit(&mut exits, kind, classify_join(result, false));
+                } else {
+                    index += 1;
+                }
+            }
+            if tasks.is_empty() {
+                self.tasks.remove(&kind);
+            }
+        }
+        exits
+    }
+
     pub async fn shutdown(
         &mut self,
         mode: ShutdownMode,
@@ -213,6 +237,25 @@ mod tests {
             exits[&TaskKind::Dht],
             vec![TaskExit::Failed(FailureReasonCode::WorkerPanicked)]
         );
+    }
+
+    #[tokio::test]
+    async fn finished_worker_failure_can_be_harvested_before_shutdown() {
+        let mut registry = TaskRegistry::default();
+        register(
+            &mut registry,
+            TaskKind::Dht,
+            tokio::spawn(async { panic!("synthetic panic") }),
+        );
+        tokio::task::yield_now().await;
+
+        let exits = registry.drain_finished().await;
+
+        assert_eq!(
+            exits[&TaskKind::Dht],
+            vec![TaskExit::Failed(FailureReasonCode::WorkerPanicked)]
+        );
+        assert!(registry.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
