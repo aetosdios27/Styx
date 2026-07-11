@@ -4,7 +4,8 @@ use std::time::Duration;
 use styx_app::{commands::CommandResponse, ControlCommand, TorrentRuntime};
 use styx_dht::{DhtMessage, DhtQuery, DhtResponse, DhtSocket, NodeId};
 use styx_runtime::{
-    spawn_session_supervisor, AppRuntime, RuntimeConfig, SessionNotice, SessionOwner, ShutdownMode,
+    spawn_session_supervisor, AppRuntime, DhtOwner, LsdOwner, OwnedTask, RuntimeConfig,
+    SessionNotice, SessionOwner, ShutdownMode,
 };
 
 #[test]
@@ -21,8 +22,56 @@ fn app_runtime_without_session_keeps_synchronous_status_contract() {
 }
 
 #[test]
-fn session_owner_is_not_cloneable() {
+fn ownership_tokens_are_not_cloneable() {
     static_assertions::assert_not_impl_any!(SessionOwner: Clone);
+    static_assertions::assert_not_impl_any!(DhtOwner: Clone);
+    static_assertions::assert_not_impl_any!(LsdOwner: Clone);
+    static_assertions::assert_not_impl_any!(OwnedTask: Clone);
+}
+
+#[test]
+fn production_tokio_spawns_are_confined_to_approved_factories() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let approved = [
+        "daemon.rs",
+        "dht.rs",
+        "driver.rs",
+        "lsd.rs",
+        "peer_io.rs",
+        "supervision/supervisor.rs",
+    ];
+    let mut violations = Vec::new();
+
+    for relative in rust_sources(&root) {
+        let source = std::fs::read_to_string(root.join(&relative)).unwrap();
+        let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+        if production.contains("tokio::spawn(")
+            && !approved.contains(&relative.to_string_lossy().as_ref())
+        {
+            violations.push(relative);
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "production tokio::spawn outside approved factories: {violations:?}"
+    );
+}
+
+fn rust_sources(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut sources = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                sources.push(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+    }
+    sources
 }
 
 #[tokio::test]
